@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+# Pre-push guard for familygram.
+#
+# Refuses to push commits that introduce any of:
+#   - paths that should remain gitignored (wrangler.local.jsonc, ship.env, keys/, etc.)
+#   - common credential patterns (private keys, AWS/GitHub tokens, GCP key fragments)
+#   - literal values pulled from THIS clone's local config (Ory URL, D1 ID, Worker
+#     name, your email...). Skipped silently on fresh clones with no local config.
+#
+# Bypass once:  git push --no-verify
+#
+# Activated via:  git config core.hooksPath scripts/git-hooks
+# (run `make hooks` after a fresh clone)
+
+set -u
+
+repo_root=$(git rev-parse --show-toplevel)
+
+forbidden_paths='(^|/)(wrangler\.local\.jsonc|ship\.env|dev\.env\.mk)$|^keys/|AuthKey_[^/]+\.p8$|\.dev\.vars$|\.env\.local$'
+
+secret_regex=(
+  '-----BEGIN [A-Z ]*PRIVATE KEY-----'
+  'AKIA[0-9A-Z]{16}'
+  'ghp_[A-Za-z0-9]{36}'
+  'gho_[A-Za-z0-9]{36}'
+  'glpat-[A-Za-z0-9_-]{20,}'
+  '"private_key_id"[[:space:]]*:[[:space:]]*"[a-f0-9]{40}"'
+)
+
+literal_values=()
+
+extract_jsonc() {
+  local file=$1 key=$2
+  [[ -f $file ]] || return 0
+  sed 's://[^"]*$::' "$file" \
+    | grep -oE "\"${key}\"[[:space:]]*:[[:space:]]*\"[^\"]+\"" \
+    | head -1 \
+    | sed -E "s/.*:[[:space:]]*\"([^\"]+)\"/\\1/"
+}
+
+extract_env() {
+  local file=$1 key=$2
+  [[ -f $file ]] || return 0
+  grep -E "^${key}=" "$file" | head -1 | sed -E "s/^${key}=//; s/^\"//; s/\"$//"
+}
+
+add_value() {
+  local v=$1
+  case "$v" in
+    ""|"<your-"*|"REPLACE"*|"your-worker-name"|"familygram"|"familygram-media"|"YOUR-"*|"https://YOUR"*|"https://<"*|"ABCDE"*|"00000000-"*)
+      return 0 ;;
+  esac
+  literal_values+=("$v")
+}
+
+jsonc=$repo_root/backend/wrangler.local.jsonc
+if [[ -f $jsonc ]]; then
+  for k in ORY_SDK_URL MEDIA_PUBLIC_BASE SUPPORT_EMAIL database_id name; do
+    val=$(extract_jsonc "$jsonc" "$k")
+    add_value "$val"
+    # For URLs, also catch the bare hostname (partial references).
+    case "$val" in
+      https://*)
+        host=$(echo "$val" | sed -E 's|^https?://||; s|/.*||')
+        add_value "$host"
+        ;;
+    esac
+  done
+fi
+
+ship_env=$repo_root/scripts/ship.env
+if [[ -f $ship_env ]]; then
+  for k in API_BASE ORY_BASE ASC_API_KEY_ID ASC_API_ISSUER_ID; do
+    val=$(extract_env "$ship_env" "$k")
+    add_value "$val"
+    case "$val" in
+      https://*)
+        host=$(echo "$val" | sed -E 's|^https?://||; s|/.*||')
+        add_value "$host"
+        ;;
+    esac
+  done
+fi
+
+zero=0000000000000000000000000000000000000000
+fail=0
+checked=0
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [[ $local_sha == "$zero" ]] && continue
+
+  if [[ $remote_sha == "$zero" ]]; then
+    commits=$(git rev-list "$local_sha" --not --remotes 2>/dev/null \
+              || git rev-list "$local_sha")
+  else
+    commits=$(git rev-list "${remote_sha}..${local_sha}")
+  fi
+
+  for sha in $commits; do
+    checked=$((checked + 1))
+    changed=$(git show --name-only --format= "$sha" 2>/dev/null || true)
+    diff=$(git show --format= "$sha" 2>/dev/null || true)
+
+    while IFS= read -r f; do
+      [[ -z $f ]] && continue
+      if echo "$f" | grep -qE "$forbidden_paths"; then
+        echo "❌ pre-push: $sha pushes file that should remain gitignored: $f"
+        fail=1
+      fi
+    done <<<"$changed"
+
+    for pat in "${secret_regex[@]}"; do
+      if echo "$diff" | grep -qE -- "$pat"; then
+        echo "❌ pre-push: $sha matches credential pattern: /$pat/"
+        fail=1
+      fi
+    done
+
+    for v in "${literal_values[@]}"; do
+      if echo "$diff" | grep -qF -- "$v"; then
+        echo "❌ pre-push: $sha contains a value from your local config: $v"
+        fail=1
+      fi
+    done
+  done
+done
+
+if (( fail != 0 )); then
+  cat <<EOF
+
+Push aborted. If this is a false positive, bypass once with:
+  git push --no-verify
+
+EOF
+  exit 1
+fi
+
+# Quiet on success; print a one-liner so it's clear the hook ran.
+if (( checked > 0 )); then
+  echo "✓ pre-push: $checked commit(s) clean."
+fi
+exit 0

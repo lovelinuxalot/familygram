@@ -30,7 +30,7 @@ DART_DEFINES_ANDROID := --dart-define=API_BASE=$(DEV_API_BASE_ANDROID) --dart-de
 SHIP_ENV    := set -a && . scripts/ship.env && set +a
 
 .DEFAULT_GOAL := help
-.PHONY: help setup deps pods clean dev dev-ios dev-android sim sim-ios sim-android \
+.PHONY: help setup deps pods hooks clean dev dev-ios dev-android sim sim-ios sim-android \
         worker worker-migrate worker-migrate-prod worker-deploy \
         analyze tc icon splash arch-diagram \
         build build-ios build-android \
@@ -46,7 +46,7 @@ help:  ## Show this help.
 	@printf "  ORY_BASE=%s\n" "$(DEV_ORY_BASE)"
 	@printf "Prod URLs live in scripts/ship.env and are sourced automatically.\n"
 
-setup: deps pods  ## One-time after fresh clone: install all deps.
+setup: deps pods hooks  ## One-time after fresh clone: install all deps + git hooks.
 
 deps:  ## Install Flutter and Worker dependencies.
 	cd $(MOBILE)  && flutter pub get
@@ -54,6 +54,10 @@ deps:  ## Install Flutter and Worker dependencies.
 
 pods:  ## (Re)install iOS native pods.
 	cd $(MOBILE)/ios && pod install
+
+hooks:  ## Point this clone's git hooks at scripts/git-hooks (pre-push secret scan).
+	git config core.hooksPath scripts/git-hooks
+	@echo "✓ git hooks active — scripts/git-hooks/pre-push will scan before each push."
 
 clean:  ## Wipe Flutter build artifacts + iOS Pods. Use before a fresh rebuild.
 	cd $(MOBILE) && flutter clean

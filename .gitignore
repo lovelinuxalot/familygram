@@ -1,0 +1,57 @@
+# Node / Worker
+node_modules/
+.wrangler/
+.dev.vars
+*.log
+
+# Real deployment values (template lives in backend/wrangler.jsonc)
+backend/wrangler.local.jsonc
+
+# Optional Makefile fragment for dev URLs (DEV_ORY_BASE, etc.)
+scripts/dev.env.mk
+
+# Flutter
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+**/ios/Pods/
+**/ios/.symlinks/
+**/ios/Flutter/Flutter.framework
+**/ios/Flutter/Flutter.podspec
+**/ios/Flutter/Generated.xcconfig
+**/ios/Flutter/ephemeral/
+**/ios/Flutter/app.flx
+**/ios/Flutter/app.zip
+**/ios/Flutter/flutter_assets/
+**/ios/Flutter/flutter_export_environment.sh
+**/ios/ServiceDefinitions.json
+**/ios/Runner/GeneratedPluginRegistrant.*
+**/android/.gradle/
+**/android/captures/
+**/android/gradlew
+**/android/gradlew.bat
+**/android/local.properties
+**/android/**/GeneratedPluginRegistrant.java
+**/android/key.properties
+
+# Local secrets
+*.env
+*.env.local
+.env.*
+
+# macOS
+.DS_Store
+scripts/ship.env
+keys/
+
+# Android release signing — never commit
+mobile/android/key.properties
+mobile/android/app/*.keystore
+mobile/android/app/*.jks
+mobile/android/upload-keystore.jks
+
+.claude/

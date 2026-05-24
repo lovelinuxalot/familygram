@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Familygram — Privacy Policy</title>
+<style>
+  body { max-width: 720px; margin: 2rem auto; padding: 0 1rem; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; line-height: 1.55; color: #14202e; background: #f7f9fb; }
+  h1 { font-size: 1.6rem; margin-bottom: 0.25rem; }
+  h2 { font-size: 1.15rem; margin-top: 2rem; }
+  .muted { color: #5d6b7c; font-size: 0.9rem; }
+  a { color: #1e3a5f; }
+</style>
+</head>
+<body>
+<h1>Familygram — Privacy Policy</h1>
+<p class="muted">Last updated 2026-05-18</p>
+
+<p>Familygram is a private, invite-only photo app for families. This policy explains what we collect, how we use it, and your rights.</p>
+
+<h2>Who runs Familygram</h2>
+<p>This deployment is operated by the admin who installed Familygram for their family. There is no shared service — each family runs its own instance.</p>
+
+<h2>What we collect</h2>
+<ul>
+  <li><strong>Account info from Google sign-in</strong>: your email, name, and profile picture URL. Provided by Google when you tap "Continue with Google." Used to identify you in the app.</li>
+  <li><strong>Photos you upload</strong>: stored in the admin's private Cloudflare R2 bucket. Visible only to allowlisted family members.</li>
+  <li><strong>Captions, comments, likes, mentions</strong>: stored in the admin's private Cloudflare D1 database.</li>
+  <li><strong>Authentication session</strong>: a short-lived token issued by <a href="https://www.ory.sh">Ory Network</a>, stored on your device in iOS Keychain.</li>
+</ul>
+
+<h2>What we don't collect</h2>
+<ul>
+  <li>No analytics, telemetry, or crash-reporting telemetry of any kind.</li>
+  <li>No location data.</li>
+  <li>No contact list or other device data beyond the photo you choose to upload.</li>
+  <li>No advertising identifiers.</li>
+</ul>
+
+<h2>Where it's stored</h2>
+<p>Photos go to Cloudflare R2 (encrypted at rest). Account info and posts go to Cloudflare D1 (encrypted at rest). Authentication is handled by Ory Network. None of this data is shared with third parties beyond those infrastructure providers.</p>
+
+<h2>Who can see your data</h2>
+<p>Only family members whose email the admin has explicitly added to the allowlist. Removing someone from the allowlist stops them signing in but leaves their existing posts visible to other family members.</p>
+
+<h2>How long it's kept</h2>
+<p>Your account, posts, comments, and uploaded photos are kept indefinitely. You can delete them at any time via the app (delete individual posts/comments) or delete your account entirely via the "Delete my account" button on the Profile screen, which removes all your data within seconds.</p>
+
+<h2>Your rights</h2>
+<p>You can:</p>
+<ul>
+  <li>See everything we have about you — it's all visible in the app.</li>
+  <li>Delete individual photos / comments — via the post detail screen.</li>
+  <li>Delete your entire account and all your data — via the Profile screen.</li>
+  <li>Ask the admin to remove your email from the allowlist — preventing future logins.</li>
+</ul>
+
+<h2>Children</h2>
+<p>Familygram is for use among consenting family members. Don't sign in children's accounts without their parent's consent. We don't knowingly collect data from children under 13.</p>
+
+<h2>Contact</h2>
+<p>The admin of your family's Familygram instance is the contact for any privacy question. If you're not sure who that is, ask whoever invited you.</p>
+
+</body>
+</html>

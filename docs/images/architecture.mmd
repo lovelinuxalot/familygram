@@ -1,0 +1,19 @@
+architecture-beta
+    group cf(logos:cloudflare)[Cloudflare]
+
+    service worker(logos:cloudflare-workers)[Worker Hono and TS] in cf
+    service d1(logos:sqlite)[D1 SQLite] in cf
+    service r2(disk)[R2 media] in cf
+
+    service phone(logos:flutter)[Flutter iOS app]
+    service ory(simple-icons:ory)[Ory Network]
+    service google(logos:google-icon)[Google OAuth]
+    service apple(logos:apple)[Apple SSO]
+
+    phone:R --> L:worker
+    worker:R --> L:d1
+    worker:B --> T:r2
+    phone:T --> B:ory
+    ory:R --> L:google
+    ory:L --> R:apple
+    worker:T --> B:ory

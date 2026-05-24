@@ -1,0 +1,82 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // Pick a unique Worker name for YOUR deployment. The final URL is
+  // `<name>.<your-cf-handle>.workers.dev` — sharing this default with other
+  // forks makes the URL enumerable across accounts, so override it in
+  // wrangler.local.jsonc. Must match ^[a-z0-9-]+$.
+  "name": "your-worker-name",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-01-15",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "rules": [
+    { "type": "Text", "globs": ["**/*.html"], "fallthrough": false }
+  ],
+
+  "observability": {
+    "enabled": true
+  },
+
+  // ─── Deployment-specific values ─────────────────────────────────────────
+  // This file is a TEMPLATE committed to the repo. The real values for *your*
+  // deployment live in `backend/wrangler.local.jsonc` (gitignored), which is
+  // the file the Makefile/wrangler actually reads. To set up a new
+  // deployment:
+  //
+  //   cp backend/wrangler.jsonc backend/wrangler.local.jsonc
+  //   # then edit wrangler.local.jsonc to fill in:
+  //   #   - vars.ORY_SDK_URL          your Ory project URL
+  //   #   - vars.MEDIA_PUBLIC_BASE    your Worker URL + /media
+  //   #   - vars.CORS_ORIGINS         comma-separated browser origins (or "")
+  //   #   - d1_databases[0].database_id   from `wrangler d1 create familygram`
+  //
+  // Why split: the template has no infra identifiers, so the repo is safe to
+  // publish without disclosing the specific Ory project / Worker / D1 a
+  // deployment is using.
+
+  "vars": {
+    "ORY_SDK_URL": "https://<your-ory-project>.projects.oryapis.com",
+    "MEDIA_PUBLIC_BASE": "https://<your-worker>.<your-cf-handle>.workers.dev/media",
+    // Comma-separated browser origins that may call this API cross-origin.
+    // Mobile (iOS/Android native) clients don't send an Origin header and are
+    // unaffected. Leave empty to deny all browser CORS requests.
+    "CORS_ORIGINS": "",
+    // Optional. Contact email rendered as a mailto: link on /support.
+    // Apple / Google reviewers expect a real support contact here. When unset,
+    // /support falls back to "ask the admin who installed Familygram".
+    "SUPPORT_EMAIL": ""
+  },
+
+  // Secrets to set via `wrangler secret put`:
+  //   ADMIN_EMAILS           comma-separated bootstrap admin emails
+  //   MEDIA_SIGNING_SECRET   32-byte hex, signs /media URLs + demo tokens
+  //   DEMO_USERS             optional: enables App Review demo login
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "familygram",
+      "database_id": "REPLACE_WITH_D1_ID_FROM_WRANGLER_CREATE"
+    }
+  ],
+
+  "r2_buckets": [
+    {
+      "binding": "MEDIA",
+      "bucket_name": "familygram-media"
+    }
+  ],
+
+  // Per-IP rate limiting (Cloudflare Rate Limiting API).
+  // namespace_id is a free-form integer — pick any value, it just groups
+  // counters for this binding. `limit` requests per `period` seconds per key.
+  // The code in src/index.ts keys by CF-Connecting-IP, so an attacker burning
+  // through the limit doesn't impact other IPs / your family.
+  "ratelimits": [
+    {
+      "name": "RATE_LIMITER",
+      "namespace_id": "1001",
+      "simple": { "limit": 120, "period": 60 }
+    }
+  ]
+}

@@ -1,10 +1,16 @@
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import 'api/api_client.dart';
+import 'models/models.dart';
 import 'state/auth.dart';
 import 'state/biometric.dart';
+import 'state/push.dart';
 import 'theme.dart';
+import 'util/log.dart' as flog;
 import 'screens/admin_panel.dart';
 import 'screens/biometric_lock.dart';
 import 'screens/feed.dart';
@@ -16,7 +22,24 @@ import 'screens/profile.dart';
 import 'screens/upload.dart';
 import 'screens/user_profile.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  // Firebase reads GoogleService-Info.plist / google-services.json at boot.
+  // If those aren't in place yet (fresh clone before push setup), log and
+  // keep going so the rest of the app still works.
+  try {
+    await Firebase.initializeApp();
+    FirebaseMessaging.onBackgroundMessage(firebaseBackgroundHandler);
+  } catch (e) {
+    debugPrint('Firebase init failed; push notifications disabled: $e');
+  }
+  // Fetch the server config so the debug-logging flag is set before any
+  // diagnostic code starts. Don't block app startup on failure — default
+  // to "debug off" which means quietest behavior.
+  try {
+    final cfg = await ApiClient().fetchConfig();
+    flog.debugLogging = cfg.debug;
+  } catch (_) {/* keep default off */}
   runApp(const ProviderScope(child: FamilygramApp()));
 }
 
@@ -64,16 +87,28 @@ class _FamilygramAppState extends ConsumerState<FamilygramApp> with WidgetsBindi
         GoRoute(
           path: '/view',
           builder: (_, s) {
-            final extra = (s.extra as Map<String, String>?) ?? const {};
-            return ImageViewerScreen(
-              url: extra['url'] ?? '',
-              cacheKey: extra['cacheKey'],
+            final extra = (s.extra as Map<String, dynamic>?) ?? const {};
+            final urls = (extra['urls'] as List?)?.cast<String>();
+            if (urls != null && urls.isNotEmpty) {
+              final keys = ((extra['cacheKeys'] as List?)?.cast<String?>()) ??
+                  List<String?>.filled(urls.length, null);
+              final initial = (extra['initialIndex'] as int?) ?? 0;
+              final post = extra['post'] as Post?;
+              return ImageViewerScreen(urls: urls, cacheKeys: keys, initialIndex: initial, post: post);
+            }
+            // Single-photo legacy shape: {url, cacheKey}.
+            return ImageViewerScreen.single(
+              url: (extra['url'] as String?) ?? '',
+              cacheKey: extra['cacheKey'] as String?,
             );
           },
         ),
       ],
     );
     WidgetsBinding.instance.addPostFrameCallback((_) async {
+      // Make the router reachable from push tap handlers before bootstrap, so
+      // a cold-start notification can still deep-link the moment auth resolves.
+      ref.read(routerProvider.notifier).state = _router;
       await ref.read(authProvider.notifier).bootstrap();
       if (mounted) setState(() => _booted = true);
     });

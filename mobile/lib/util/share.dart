@@ -6,10 +6,16 @@ import 'package:share_plus/share_plus.dart';
 
 import '../models/models.dart';
 
-// Download the post's full image to a temp file and hand it to the system
-// share sheet (Save to Photos, Messages, AirDrop, etc on iOS; equivalent on
-// Android). Surfaces failures via SnackBar on the supplied context.
-Future<void> sharePost(BuildContext context, Post post) async {
+// Download one of the post's full images to a temp file and hand it to the
+// system share sheet (Save to Photos, Messages, AirDrop, etc on iOS;
+// equivalent on Android). `idx` picks which photo from a multi-photo post —
+// default 0 (the cover). Surfaces failures via SnackBar on the supplied
+// context.
+Future<void> sharePost(BuildContext context, Post post, {int idx = 0}) async {
+  if (post.media.isEmpty) return;
+  final safeIdx = (idx >= 0 && idx < post.media.length) ? idx : 0;
+  final media = post.media[safeIdx];
+
   // Capture the popover anchor synchronously, before any awaits. iPad
   // requires this Rect; iPhone ignores it.
   final box = context.findRenderObject() as RenderBox?;
@@ -19,7 +25,7 @@ Future<void> sharePost(BuildContext context, Post post) async {
   try {
     final dio = Dio();
     final res = await dio.get<List<int>>(
-      post.imageUrl,
+      media.imageUrl,
       options: Options(responseType: ResponseType.bytes),
     );
     final bytes = res.data;
@@ -27,7 +33,10 @@ Future<void> sharePost(BuildContext context, Post post) async {
       throw Exception('empty image bytes');
     }
     final dir = await getTemporaryDirectory();
-    final file = File('${dir.path}/familygram-${post.id}.jpg');
+    // Filename includes idx so a second share from the same post doesn't
+    // overwrite the prior temp file while the share sheet is still open.
+    final suffix = post.media.length > 1 ? '-${safeIdx + 1}' : '';
+    final file = File('${dir.path}/familygram-${post.id}$suffix.jpg');
     await file.writeAsBytes(bytes);
     final subject = '${post.author.displayName} on Familygram';
     final text = post.caption?.trim().isNotEmpty == true

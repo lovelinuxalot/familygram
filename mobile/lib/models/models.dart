@@ -16,14 +16,28 @@ class Author {
       );
 }
 
+// One photo in a post. A post can hold multiple, indexed 0..N-1.
+class PostMedia {
+  final int idx;
+  final String imageUrl;
+  final String thumbUrl;
+  final int? width;
+  final int? height;
+  const PostMedia({required this.idx, required this.imageUrl, required this.thumbUrl, this.width, this.height});
+  factory PostMedia.fromJson(Map<String, dynamic> j) => PostMedia(
+        idx: j['idx'] as int,
+        imageUrl: j['image_url'] as String,
+        thumbUrl: j['thumb_url'] as String,
+        width: j['width'] as int?,
+        height: j['height'] as int?,
+      );
+}
+
 class Post {
   final String id;
   final String userId;
-  final String imageUrl;
-  final String thumbUrl;
+  final List<PostMedia> media;
   final String? caption;
-  final int? width;
-  final int? height;
   final int createdAt;
   final Author author;
   final int likeCount;
@@ -33,11 +47,8 @@ class Post {
   Post({
     required this.id,
     required this.userId,
-    required this.imageUrl,
-    required this.thumbUrl,
+    required this.media,
     required this.caption,
-    required this.width,
-    required this.height,
     required this.createdAt,
     required this.author,
     required this.likeCount,
@@ -45,11 +56,18 @@ class Post {
     required this.liked,
   });
 
-  Post copyWith({int? likeCount, int? commentCount, bool? liked, String? imageUrl, String? thumbUrl}) => Post(
+  // Convenience: first photo's URLs / dimensions. Anything that needs the
+  // whole carousel should iterate `media` directly.
+  PostMedia get firstMedia => media.first;
+  String get imageUrl => media.first.imageUrl;
+  String get thumbUrl => media.first.thumbUrl;
+  int? get width => media.first.width;
+  int? get height => media.first.height;
+
+  Post copyWith({int? likeCount, int? commentCount, bool? liked, List<PostMedia>? media}) => Post(
         id: id, userId: userId,
-        imageUrl: imageUrl ?? this.imageUrl,
-        thumbUrl: thumbUrl ?? this.thumbUrl,
-        caption: caption, width: width, height: height, createdAt: createdAt,
+        media: media ?? this.media,
+        caption: caption, createdAt: createdAt,
         author: author,
         likeCount: likeCount ?? this.likeCount,
         commentCount: commentCount ?? this.commentCount,
@@ -59,11 +77,10 @@ class Post {
   factory Post.fromJson(Map<String, dynamic> j) => Post(
         id: j['id'] as String,
         userId: j['user_id'] as String,
-        imageUrl: j['image_url'] as String,
-        thumbUrl: j['thumb_url'] as String,
+        media: ((j['media'] as List?) ?? const [])
+            .map((m) => PostMedia.fromJson(m as Map<String, dynamic>))
+            .toList(),
         caption: j['caption'] as String?,
-        width: j['width'] as int?,
-        height: j['height'] as int?,
         createdAt: j['created_at'] as int,
         author: Author.fromJson(j['author'] as Map<String, dynamic>),
         likeCount: j['like_count'] as int? ?? 0,
@@ -118,21 +135,32 @@ class UserProfile {
       );
 }
 
-// Minimal post shape for grids — just enough to render a thumbnail tile.
+// Minimal post shape for grids — just the first photo's thumbnail plus a
+// count so the tile can show a multi-photo badge.
 class PostThumb {
   final String id;
   final String imageUrl;
   final String thumbUrl;
   final int? width;
   final int? height;
+  final int mediaCount;
   final int createdAt;
-  PostThumb({required this.id, required this.imageUrl, required this.thumbUrl, required this.width, required this.height, required this.createdAt});
+  PostThumb({
+    required this.id,
+    required this.imageUrl,
+    required this.thumbUrl,
+    required this.width,
+    required this.height,
+    required this.mediaCount,
+    required this.createdAt,
+  });
   factory PostThumb.fromJson(Map<String, dynamic> j) => PostThumb(
         id: j['id'] as String,
         imageUrl: j['image_url'] as String,
         thumbUrl: j['thumb_url'] as String,
         width: j['width'] as int?,
         height: j['height'] as int?,
+        mediaCount: j['media_count'] as int? ?? 1,
         createdAt: j['created_at'] as int,
       );
 }

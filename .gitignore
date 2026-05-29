@@ -54,4 +54,10 @@ mobile/android/app/*.keystore
 mobile/android/app/*.jks
 mobile/android/upload-keystore.jks
 
+# Firebase / push: client-side config files. Safe per Google's docs, but
+# keep them per-deployment so a fork doesn't accidentally inherit them.
+# See docs/PUSH_NOTIFICATIONS.md for how to obtain.
+mobile/ios/Runner/GoogleService-Info.plist
+mobile/android/app/google-services.json
+
 .claude/

@@ -1,9 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../api/api_client.dart';
 import '../api/ory_client.dart';
 import '../models/models.dart';
 import 'biometric.dart';
+import 'push.dart';
 
 const _kSessionKey = 'ory_session_token';
 
@@ -79,6 +82,8 @@ class AuthController extends StateNotifier<AuthState> {
   }
 
   Future<void> logout() async {
+    // Unregister BEFORE clearing the session token; the DELETE call needs auth.
+    await _ref.read(pushControllerProvider).unregisterCurrent();
     await _ref.read(secureStorageProvider).delete(key: _kSessionKey);
     _ref.read(apiClientProvider).setToken(null);
     _ref.read(biometricProvider.notifier).reset();
@@ -103,6 +108,7 @@ class AuthController extends StateNotifier<AuthState> {
     try {
       final me = await api.me();
       state = state.copyWith(me: me, clearNotAllowed: true);
+      _kickPushRegistration();
       return;
     } on ApiException catch (e) {
       if (e.status == 401) { await logout(); return; }
@@ -112,6 +118,7 @@ class AuthController extends StateNotifier<AuthState> {
     try {
       final me = await api.finalize();
       state = state.copyWith(me: me, clearNotAllowed: true);
+      _kickPushRegistration();
     } on ApiException catch (e) {
       if (e.status == 403 && e.code == 'not_allowed') {
         state = state.copyWith(notAllowed: true, notAllowedEmail: e.message, clearMe: true);
@@ -121,6 +128,12 @@ class AuthController extends StateNotifier<AuthState> {
         rethrow;
       }
     }
+  }
+
+  // Fire-and-forget: requesting permission + waiting for the APNs token can
+  // take seconds, so we don't block sign-in on it.
+  void _kickPushRegistration() {
+    unawaited(_ref.read(pushControllerProvider).onAuthenticated());
   }
 }
 

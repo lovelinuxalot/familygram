@@ -3,6 +3,32 @@ import 'package:dio/dio.dart';
 import '../config.dart';
 import '../models/models.dart';
 
+class ServerConfig {
+  final bool demoMode;
+  final bool debug;
+  // Hard cap on photos per post. Mobile reads this at startup so the picker
+  // and the upload screen enforce the same number as the Worker.
+  final int maxPostMedia;
+  const ServerConfig({required this.demoMode, required this.debug, required this.maxPostMedia});
+}
+
+// One photo to attach to a multi-photo post. The upload screen produces this
+// list after compressing each picked image to full + thumb WebP.
+class UploadMedia {
+  final Uint8List imageBytes;
+  final String imageMime;     // 'image/webp' / 'image/jpeg' / 'image/png'
+  final Uint8List thumbBytes;
+  final int width;
+  final int height;
+  const UploadMedia({
+    required this.imageBytes,
+    required this.imageMime,
+    required this.thumbBytes,
+    required this.width,
+    required this.height,
+  });
+}
+
 class ApiException implements Exception {
   final int status;
   final String? code;
@@ -17,6 +43,11 @@ class ApiException implements Exception {
 //   - injects Authorization: Bearer <ory session token>
 //   - surfaces the special needs_invite signal so the router can route to onboarding
 class ApiClient {
+  // Last successful fetchConfig() result. main.dart fetches at boot, so any
+  // screen can read this without re-fetching. Null until the first /config
+  // call succeeds; callers should fall back to a safe default.
+  static ServerConfig? lastConfig;
+
   final Dio _dio;
   String? _token;
 
@@ -41,9 +72,24 @@ class ApiClient {
   // the backend env var DEMO_USERS — flipping it off both 404s /auth/demo and
   // hides the UI.
   Future<bool> isDemoMode() async {
+    final cfg = await fetchConfig();
+    return cfg.demoMode;
+  }
+
+  // Public, unauthenticated. Returns the full server config in one round-trip.
+  // Called at app startup so the debug flag is available before push diagnostics
+  // start firing.
+  Future<ServerConfig> fetchConfig() async {
     final r = await _dio.get('/config');
     _ensureOk(r);
-    return (r.data as Map<String, dynamic>)['demo_mode'] == true;
+    final data = r.data as Map<String, dynamic>;
+    final cfg = ServerConfig(
+      demoMode: data['demo_mode'] == true,
+      debug: data['debug'] == true,
+      maxPostMedia: (data['max_post_media'] as int?) ?? 5,
+    );
+    ApiClient.lastConfig = cfg;
+    return cfg;
   }
 
   // Trade fixed demo credentials for a Bearer token that oryAuth accepts.
@@ -155,6 +201,14 @@ class ApiClient {
 
   Future<void> like(String id) async => _ensureOk(await _dio.post('/posts/$id/like'));
   Future<void> unlike(String id) async => _ensureOk(await _dio.delete('/posts/$id/like'));
+
+  Future<List<UserProfile>> getLikes(String postId) async {
+    final r = await _dio.get('/posts/$postId/likes');
+    _ensureOk(r);
+    return ((r.data as Map<String, dynamic>)['items'] as List)
+        .map((j) => UserProfile.fromJson(j as Map<String, dynamic>))
+        .toList();
+  }
   Future<void> deletePost(String id) async => _ensureOk(await _dio.delete('/posts/$id'));
 
   Future<List<Comment>> getComments(String postId) async {
@@ -171,6 +225,24 @@ class ApiClient {
     return Comment.fromJson(r.data as Map<String, dynamic>);
   }
 
+  Future<void> registerDeviceToken(String token, String platform) async {
+    final r = await _dio.post('/me/device-tokens', data: {'token': token, 'platform': platform});
+    _ensureOk(r);
+  }
+
+  // Best-effort: don't throw — diagnostics shouldn't break anything they touch.
+  Future<void> pushDiagnostic(Map<String, Object?> info) async {
+    try {
+      await _dio.post('/me/push-diagnostic', data: info);
+    } catch (_) {/* swallow */}
+  }
+
+  // Body-not-path so the FCM token (long, contains ':') doesn't need URL encoding.
+  Future<void> unregisterDeviceToken(String token) async {
+    final r = await _dio.delete('/me/device-tokens', data: {'token': token});
+    _ensureOk(r);
+  }
+
   Future<Me> uploadAvatar(Uint8List bytes) async {
     final form = FormData.fromMap({
       'avatar': MultipartFile.fromBytes(bytes, filename: 'avatar.jpg', contentType: _mediaType('image/jpeg')),
@@ -181,22 +253,36 @@ class ApiClient {
   }
 
   Future<Post> uploadPost({
-    required Uint8List imageBytes,
-    required String imageMime,
-    required Uint8List thumbBytes,
-    required int width,
-    required int height,
+    required List<UploadMedia> media,
     String? caption,
   }) async {
-    final imgExt = imageMime == 'image/png' ? 'png' : 'jpg';
-    final form = FormData.fromMap({
-      'image': MultipartFile.fromBytes(imageBytes, filename: 'image.$imgExt', contentType: _mediaType(imageMime)),
-      'thumb': MultipartFile.fromBytes(thumbBytes, filename: 'thumb.jpg', contentType: _mediaType('image/jpeg')),
-      'width': width.toString(),
-      'height': height.toString(),
+    if (media.isEmpty) {
+      throw ArgumentError('uploadPost: at least one media required');
+    }
+    final fields = <String, dynamic>{
       if (caption != null && caption.isNotEmpty) 'caption': caption,
-    });
-    final r = await _dio.post('/posts', data: form);
+    };
+    for (var i = 0; i < media.length; i++) {
+      final m = media[i];
+      final imgExt = m.imageMime == 'image/png'
+          ? 'png'
+          : m.imageMime == 'image/webp'
+              ? 'webp'
+              : 'jpg';
+      fields['image_$i'] = MultipartFile.fromBytes(
+        m.imageBytes,
+        filename: 'image_$i.$imgExt',
+        contentType: _mediaType(m.imageMime),
+      );
+      fields['thumb_$i'] = MultipartFile.fromBytes(
+        m.thumbBytes,
+        filename: 'thumb_$i.webp',
+        contentType: _mediaType('image/webp'),
+      );
+      fields['width_$i'] = m.width.toString();
+      fields['height_$i'] = m.height.toString();
+    }
+    final r = await _dio.post('/posts', data: FormData.fromMap(fields));
     _ensureOk(r);
     // /posts returns a partial; refetch to get author/likes shape
     return getPost((r.data as Map<String, dynamic>)['id'] as String);

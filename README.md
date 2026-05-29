@@ -50,6 +50,8 @@ familygram/
 │   ├── GOOGLE_SSO.md        # Google Cloud + Ory social provider
 │   ├── APPLE_SSO.md         # Apple Sign-in setup (required for App Store)
 │   ├── ANDROID_RELEASE.md   # Keystore + Play Console internal testing
+│   ├── PUSH_NOTIFICATIONS.md # Firebase + APNs setup for upload notifications
+│   ├── LOGGING.md           # debug-logging toggle for the Worker + mobile app
 │   └── RELEASE_NOTES.md     # what shipped, when
 ├── scripts/
 │   ├── ship-testflight.sh   # build + upload TestFlight build

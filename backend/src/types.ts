@@ -29,6 +29,39 @@ export interface Env {
   // disable demo mode entirely — /auth/demo then returns 404 and the mobile
   // UI hides the email/password form.
   DEMO_USERS?: string;
+  // Firebase Cloud Messaging credentials for push notifications. Set via:
+  //   wrangler secret put FCM_SERVICE_ACCOUNT_JSON   # paste full SA JSON
+  //   wrangler secret put FCM_PROJECT_ID             # the project_id field
+  // When either is unset, push fan-out silently no-ops (the rest of the app
+  // still works). See docs/PUSH_NOTIFICATIONS.md for the Firebase setup.
+  FCM_SERVICE_ACCOUNT_JSON?: string;
+  FCM_PROJECT_ID?: string;
+  // Verbose debug logging toggle. When set to a truthy value (1/true/yes/on),
+  // the request logger middleware, push fan-out details, and /me/push-diagnostic
+  // payloads are written to console — visible via `wrangler tail`. Toggle live
+  // with no redeploy:
+  //   enable:  echo 1 | npx wrangler secret put DEBUG_LOGGING -c wrangler.local.jsonc
+  //   disable: npx wrangler secret delete DEBUG_LOGGING -c wrangler.local.jsonc
+  // Errors (console.error) and one-time configuration warnings are always
+  // logged regardless of this flag.
+  DEBUG_LOGGING?: string;
+  // Max photos allowed in a single post. Surfaced to the mobile app via
+  // /config so the picker enforces the same cap. Defaults to 5 when unset
+  // or invalid; hard-ceilinged at 50.
+  MAX_POST_MEDIA?: string | number;
+}
+
+export function isDebugEnabled(env: Env): boolean {
+  const v = (env.DEBUG_LOGGING ?? '').toLowerCase().trim();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
+
+export function getMaxPostMedia(env: Env): number {
+  const raw = env.MAX_POST_MEDIA;
+  if (raw === undefined || raw === null || raw === '') return 5;
+  const n = typeof raw === 'number' ? raw : Number(raw);
+  if (!Number.isFinite(n) || n < 1) return 5;
+  return Math.min(Math.floor(n), 50);
 }
 
 export interface AppUser {

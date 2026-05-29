@@ -6,6 +6,7 @@ plugins {
     id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+    id("com.google.gms.google-services")
 }
 
 // Load release signing config from a gitignored `android/key.properties` file
@@ -27,6 +28,9 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // flutter_local_notifications uses java.time.* — desugar so it runs
+        // on Android versions below 26.
+        isCoreLibraryDesugaringEnabled = true
     }
 
     kotlinOptions {
@@ -73,4 +77,10 @@ android {
 
 flutter {
     source = "../.."
+}
+
+dependencies {
+    // Required by flutter_local_notifications because it calls java.time.*
+    // APIs that aren't available on Android < 26. Desugaring backports them.
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 }

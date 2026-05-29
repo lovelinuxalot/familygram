@@ -9,7 +9,8 @@ import '../util/share.dart';
 import '../util/time.dart';
 import 'caption.dart';
 import 'comments_sheet.dart';
-import 'feed_image.dart';
+import 'likes_sheet.dart';
+import 'post_carousel.dart';
 import 'user_avatar.dart';
 
 class PostTile extends ConsumerWidget {
@@ -21,9 +22,6 @@ class PostTile extends ConsumerWidget {
     final api = ref.read(apiClientProvider);
     final me = ref.watch(authProvider).me;
     final isMine = me?.id == post.userId;
-    final ar = (post.width != null && post.height != null && post.height! > 0)
-        ? post.width! / post.height!
-        : 1.0;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -53,16 +51,13 @@ class PostTile extends ConsumerWidget {
               ),
           ]),
         ),
-        GestureDetector(
-          onTap: () => context.push('/view', extra: {'url': post.imageUrl, 'cacheKey': 'full:${post.id}'}),
-          child: MediaImage(url: post.thumbUrl, cacheKey: 'thumb:${post.id}', aspectRatio: ar, fit: BoxFit.cover),
-        ),
+        PostCarousel(post: post),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
           child: Row(children: [
-            IconButton(
-              icon: Icon(post.liked ? Icons.favorite : Icons.favorite_border, color: post.liked ? Colors.red : null),
-              onPressed: () async {
+            InkWell(
+              customBorder: const CircleBorder(),
+              onTap: () async {
                 final next = post.copyWith(liked: !post.liked, likeCount: post.likeCount + (post.liked ? -1 : 1));
                 ref.read(feedProvider.notifier).replacePost(next);
                 try {
@@ -80,6 +75,11 @@ class PostTile extends ConsumerWidget {
                   }
                 }
               },
+              onLongPress: post.likeCount > 0 ? () => showLikesSheet(context, post.id) : null,
+              child: Padding(
+                padding: const EdgeInsets.all(8),
+                child: Icon(post.liked ? Icons.favorite : Icons.favorite_border, color: post.liked ? Colors.red : null),
+              ),
             ),
             Text('${post.likeCount}', style: const TextStyle(fontSize: 13)),
             const SizedBox(width: 12),

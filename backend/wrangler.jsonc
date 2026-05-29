@@ -44,7 +44,10 @@
     // Optional. Contact email rendered as a mailto: link on /support.
     // Apple / Google reviewers expect a real support contact here. When unset,
     // /support falls back to "ask the admin who installed Familygram".
-    "SUPPORT_EMAIL": ""
+    "SUPPORT_EMAIL": "",
+    // Hard cap on photos per post. Mobile reads this from /config so the
+    // picker enforces the same number. Default in code is 5 if unset.
+    "MAX_POST_MEDIA": 5
   },
 
   // Secrets to set via `wrangler secret put`:

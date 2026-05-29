@@ -72,12 +72,13 @@ Three things to notice:
 
 ```mermaid
 erDiagram
-    USERS ||--o{ POSTS    : authors
-    USERS ||--o{ COMMENTS : writes
-    USERS ||--o{ LIKES    : gives
-    USERS ||--o{ ALLOWLIST : "added by"
-    POSTS ||--o{ COMMENTS : has
-    POSTS ||--o{ LIKES    : receives
+    USERS ||--o{ POSTS      : authors
+    USERS ||--o{ COMMENTS   : writes
+    USERS ||--o{ LIKES      : gives
+    USERS ||--o{ ALLOWLIST  : "added by"
+    POSTS ||--|{ POST_MEDIA : "carries 1..N photos"
+    POSTS ||--o{ COMMENTS   : has
+    POSTS ||--o{ LIKES      : receives
 
     USERS {
         text id PK
@@ -99,12 +100,16 @@ erDiagram
     POSTS {
         text id PK
         text user_id FK
+        text caption
+        int created_at
+    }
+    POST_MEDIA {
+        text post_id PK
+        int idx PK
         text image_key
         text thumb_key
-        text caption
         int width
         int height
-        int created_at
     }
     COMMENTS {
         text id PK
@@ -120,15 +125,21 @@ erDiagram
     }
 ```
 
+A `POSTS` row carries metadata (author, caption, time); the photos themselves live in `POST_MEDIA`, one row per photo, ordered by `idx` from 0. A single-photo post is just one `POST_MEDIA` row; a carousel is multiple. The Worker enforces a hard cap (`MAX_POST_MEDIA`, default 5) on the photo count per post — change the var in `backend/wrangler.jsonc` and redeploy to lift it. The mobile picker reads the same number off `GET /config` so client and server stay aligned.
+
+**Backward-compat shim**: `decoratePost` in `backend/src/index.ts` mirrors `media[0]`'s `image_url` / `thumb_url` / `width` / `height` as top-level fields on the post JSON. Mobile builds shipped before the multi-photo migration read those top-level keys; the shim keeps them working (showing only the first photo) until every install in the wild has updated. Safe to delete the four `first?.*` lines and the comment above them once that's true.
+
 Migrations live in `backend/migrations/`. Run them with `make worker-migrate` (local) or `make worker-migrate-prod` (production).
 
 ---
 
 ## Storage layout in R2
 
-- `posts/<user_id>/<post_id>.jpg`        — full image, 2000 px / q88 JPEG. Served when sharing/downloading and in the full-screen viewer.
-- `posts/<user_id>/<post_id>_thumb.jpg`  — display tier, 1200 px / q88. Served on the feed and in the comments sheet.
-- `avatars/<user_id>/<version>.jpg`      — square 256 px avatar; version suffix busts client caches across uploads.
+- `posts/<user_id>/<post_id>_<idx>.<ext>`        — full image at `idx` in the carousel, 2000 px max edge, WebP q82 (older single-photo posts from before the multi-photo migration use the legacy `posts/<user_id>/<post_id>.jpg` shape; either key is fine, we read whatever `post_media.image_key` says).
+- `posts/<user_id>/<post_id>_<idx>_thumb.<ext>` — display tier, 1200 px max edge, WebP q80. Served on the feed and in the comments sheet.
+- `avatars/<user_id>/<version>.jpg`             — square 256 px avatar; version suffix busts client caches across uploads.
+
+`<idx>` is 0-based and matches the `POST_MEDIA.idx` column, so the carousel order in the UI follows the order on disk.
 
 ## Signed media URLs
 

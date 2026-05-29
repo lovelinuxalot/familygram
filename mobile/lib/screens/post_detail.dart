@@ -9,9 +9,10 @@ import '../state/auth.dart';
 import '../state/feed.dart';
 import '../util/time.dart';
 import '../widgets/caption.dart';
-import '../widgets/feed_image.dart';
+import '../widgets/likes_sheet.dart';
 import '../widgets/mention_field.dart';
 import '../widgets/mention_text.dart';
+import '../widgets/post_carousel.dart';
 import '../widgets/user_avatar.dart';
 
 class PostDetailScreen extends ConsumerStatefulWidget {
@@ -89,9 +90,6 @@ class _PostDetailScreenState extends ConsumerState<PostDetailScreen> {
   }
 
   Widget _build(Post post) {
-    final ar = (post.width != null && post.height != null && post.height! > 0)
-        ? post.width! / post.height!
-        : 1.0;
     final api = ref.read(apiClientProvider);
     final me = ref.read(authProvider).me;
     return Column(
@@ -153,19 +151,13 @@ class _PostDetailScreenState extends ConsumerState<PostDetailScreen> {
                     ),
                 ]),
               ),
-              GestureDetector(
-                onTap: () => context.push('/view', extra: {'url': post.imageUrl, 'cacheKey': 'full:${post.id}'}),
-                child: Hero(
-                  tag: 'image-${post.id}',
-                  child: MediaImage(url: post.imageUrl, cacheKey: 'full:${post.id}', aspectRatio: ar),
-                ),
-              ),
+              PostCarousel(post: post, useThumb: false, heroForFirst: true),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 child: Row(children: [
-                  IconButton(
-                    icon: Icon(post.liked ? Icons.favorite : Icons.favorite_border, color: post.liked ? Colors.red : null),
-                    onPressed: () async {
+                  InkWell(
+                    customBorder: const CircleBorder(),
+                    onTap: () async {
                       final next = post.copyWith(liked: !post.liked, likeCount: post.likeCount + (post.liked ? -1 : 1));
                       setState(() => _post = next);
                       ref.read(feedProvider.notifier).replacePost(next);
@@ -185,6 +177,11 @@ class _PostDetailScreenState extends ConsumerState<PostDetailScreen> {
                         }
                       }
                     },
+                    onLongPress: post.likeCount > 0 ? () => showLikesSheet(context, post.id) : null,
+                    child: Padding(
+                      padding: const EdgeInsets.all(8),
+                      child: Icon(post.liked ? Icons.favorite : Icons.favorite_border, color: post.liked ? Colors.red : null),
+                    ),
                   ),
                   Text('${post.likeCount}', style: const TextStyle(fontSize: 13)),
                   const Spacer(),

@@ -238,7 +238,14 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
             final p = _posts[i];
             return GestureDetector(
               onTap: () => context.push('/post/${p.id}'),
-              child: MediaImage(url: p.thumbUrl, cacheKey: 'thumb:${p.id}', fit: BoxFit.cover),
+              child: Stack(children: [
+                Positioned.fill(child: MediaImage(url: p.thumbUrl, cacheKey: 'thumb:${p.id}:0', fit: BoxFit.cover)),
+                if (p.mediaCount > 1)
+                  const Positioned(
+                    top: 4, right: 4,
+                    child: Icon(Icons.collections, size: 16, color: Colors.white, shadows: [Shadow(blurRadius: 2)]),
+                  ),
+              ]),
             );
           },
           childCount: _posts.length,

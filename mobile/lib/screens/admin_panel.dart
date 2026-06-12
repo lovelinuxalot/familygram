@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 
 import '../models/models.dart';
 import '../state/auth.dart';
+import '../util/error_message.dart';
 import '../widgets/user_avatar.dart';
 
 class AdminPanelScreen extends ConsumerStatefulWidget {
@@ -82,7 +83,7 @@ class _AllowlistTabState extends ConsumerState<_AllowlistTab> {
       _emailCtrl.clear();
       await _load();
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not add: $e')));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not add to allowlist. ${friendlyError(e)}')));
     } finally {
       if (mounted) setState(() => _adding = false);
     }
@@ -105,7 +106,7 @@ class _AllowlistTabState extends ConsumerState<_AllowlistTab> {
       await ref.read(apiClientProvider).adminRemoveAllowlist(email);
       await _load();
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not remove: $e')));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not remove from allowlist. ${friendlyError(e)}')));
     }
   }
 
@@ -139,7 +140,7 @@ class _AllowlistTabState extends ConsumerState<_AllowlistTab> {
           child: _loading
               ? const Center(child: CircularProgressIndicator())
               : _error != null
-                  ? Center(child: Text(_error.toString()))
+                  ? Center(child: Text(friendlyError(_error)))
                   : _entries.isEmpty
                       ? const Center(child: Text('No emails on the list yet.'))
                       : RefreshIndicator(
@@ -208,7 +209,7 @@ class _MembersTabState extends ConsumerState<_MembersTab> {
         _users = [for (final x in _users) if (x.id == updated.id) updated else x];
       });
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString())));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not update admin status. ${friendlyError(e)}')));
     }
   }
 
@@ -216,7 +217,7 @@ class _MembersTabState extends ConsumerState<_MembersTab> {
   Widget build(BuildContext context) {
     final myId = ref.watch(authProvider).me?.id;
     if (_loading) return const Center(child: CircularProgressIndicator());
-    if (_error != null) return Center(child: Text(_error.toString()));
+    if (_error != null) return Center(child: Text(friendlyError(_error)));
     if (_users.isEmpty) return const Center(child: Text('No members yet.'));
     return RefreshIndicator(
       onRefresh: _load,

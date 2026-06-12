@@ -57,7 +57,7 @@ class BiometricController extends StateNotifier<BiometricState> {
       state = state.copyWith(unlocked: ok, checking: false);
       return ok;
     } catch (e) {
-      state = state.copyWith(checking: false, error: e.toString());
+      state = state.copyWith(checking: false, error: 'Could not verify your identity. Please try again.');
       return false;
     }
   }

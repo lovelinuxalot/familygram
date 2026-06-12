@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../state/feed.dart';
+import '../util/error_message.dart';
 import '../widgets/main_scaffold.dart';
 import '../widgets/post_tile.dart';
 import '../widgets/skeleton.dart';
@@ -76,7 +77,7 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
         if (feed.error != null)
           Padding(
             padding: const EdgeInsets.all(16),
-            child: Center(child: Text(feed.error.toString(), style: const TextStyle(color: Colors.red))),
+            child: Center(child: Text(friendlyError(feed.error), style: const TextStyle(color: Colors.red))),
           ),
       ]);
     }

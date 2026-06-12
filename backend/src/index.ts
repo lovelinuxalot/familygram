@@ -367,8 +367,141 @@ u.patch('/admin/users/:id', requireAdmin, async (c) => {
   return c.json(await decorateUser(c, row));
 });
 
+const PENDING_MEDIA_TTL_SEC = 24 * 60 * 60;
+
+// Best-effort cleanup of a user's abandoned staged uploads. A multi-photo
+// upload that never became a post (app killed, gave up mid-retry) leaves
+// pending_media rows + R2 objects behind; sweep the user's >24h-old ones on
+// their next upload so nothing leaks. Failures here never fail the request.
+async function sweepPendingMedia(env: Env, userId: string): Promise<void> {
+  try {
+    const cutoff = now() - PENDING_MEDIA_TTL_SEC;
+    const stale = await env.DB
+      .prepare('SELECT id, image_key, thumb_key FROM pending_media WHERE user_id = ? AND created_at < ?')
+      .bind(userId, cutoff)
+      .all<{ id: string; image_key: string; thumb_key: string }>();
+    const rows = stale.results ?? [];
+    if (rows.length === 0) return;
+    await Promise.all(rows.flatMap((r) => [
+      env.MEDIA.delete(r.image_key).catch(() => {}),
+      env.MEDIA.delete(r.thumb_key).catch(() => {}),
+    ]));
+    const ids = rows.map((r) => r.id);
+    const placeholders = ids.map(() => '?').join(',');
+    await env.DB.prepare(`DELETE FROM pending_media WHERE id IN (${placeholders})`).bind(...ids).run();
+  } catch (e) {
+    console.error('sweepPendingMedia failed', e);
+  }
+}
+
+// Single-photo staged upload. Clients upload each photo here first, then call
+// POST /posts (JSON) to assemble them by media_id into one post. Splitting the
+// byte transfer per-photo — each request small — keeps a stalling uplink from
+// killing a whole multi-photo post. See migration 0005.
+u.post('/media', async (c) => {
+  const me = c.get('user');
+  // Non-blocking sweep of this user's abandoned (>24h) staged uploads.
+  c.executionCtx.waitUntil(sweepPendingMedia(c.env, me.id));
+
+  const form = await c.req.formData();
+  const image = form.get('image') as File | string | null;
+  if (!image || typeof image === 'string') throw new HTTPException(400, { message: 'image file required' });
+  const thumb = form.get('thumb') as File | string | null;
+  if (!thumb || typeof thumb === 'string') throw new HTTPException(400, { message: 'thumb file required' });
+  if (image.size > 12 * 1024 * 1024) throw new HTTPException(413, { message: 'image > 12 MB' });
+  if (thumb.size > 1024 * 1024) throw new HTTPException(413, { message: 'thumb > 1 MB' });
+  if (!image.type.startsWith('image/')) throw new HTTPException(415, { message: 'image must be image/*' });
+
+  const wStr = form.get('width') as string | null;
+  const hStr = form.get('height') as string | null;
+  const width = wStr ? Number(wStr) || null : null;
+  const height = hStr ? Number(hStr) || null : null;
+
+  const mediaId = newId();
+  const imgExt = image.type === 'image/png' ? 'png' : image.type === 'image/webp' ? 'webp' : 'jpg';
+  const thumbExt = thumb.type === 'image/webp' ? 'webp' : 'jpg';
+  const imageKey = `posts/${me.id}/${mediaId}.${imgExt}`;
+  const thumbKey = `posts/${me.id}/${mediaId}_thumb.${thumbExt}`;
+
+  await Promise.all([
+    c.env.MEDIA.put(imageKey, image.stream(), { httpMetadata: { contentType: image.type } }),
+    c.env.MEDIA.put(thumbKey, thumb.stream(), { httpMetadata: { contentType: thumb.type } }),
+  ]);
+
+  await c.env.DB
+    .prepare('INSERT INTO pending_media (id, user_id, image_key, thumb_key, width, height, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .bind(mediaId, me.id, imageKey, thumbKey, width, height, now())
+    .run();
+
+  return c.json({ media_id: mediaId });
+});
+
+// Assemble a post from photos already uploaded via POST /media. The post is
+// created atomically with all its media in one batch, so a partial upload
+// never yields a half-formed post. Consumed pending_media rows are deleted in
+// the same batch.
+async function createPostFromPendingMedia(c: Context<App>, me: AppUser): Promise<Response> {
+  const body = await c.req.json<{ caption?: string; media_ids?: string[] }>().catch(() => null);
+  const rawCaption = typeof body?.caption === 'string' ? body.caption.slice(0, 2000) : '';
+  const caption = rawCaption.length ? rawCaption : null;
+  const mediaIds = Array.isArray(body?.media_ids) ? body!.media_ids! : [];
+  const cap = getMaxPostMedia(c.env);
+
+  if (mediaIds.length === 0) throw new HTTPException(400, { message: 'at least one media_id required' });
+  if (mediaIds.length > cap) throw new HTTPException(400, { message: `at most ${cap} photos per post` });
+  if (new Set(mediaIds).size !== mediaIds.length) throw new HTTPException(400, { message: 'duplicate media_id' });
+
+  const placeholders = mediaIds.map(() => '?').join(',');
+  const pend = await c.env.DB
+    .prepare(`SELECT id, image_key, thumb_key, width, height FROM pending_media WHERE user_id = ? AND id IN (${placeholders})`)
+    .bind(me.id, ...mediaIds)
+    .all<{ id: string; image_key: string; thumb_key: string; width: number | null; height: number | null }>();
+  const byId = new Map((pend.results ?? []).map((r) => [r.id, r]));
+  for (const id of mediaIds) {
+    if (!byId.has(id)) throw new HTTPException(400, { message: `unknown or expired media_id: ${id}` });
+  }
+
+  // Preserve client-sent order as the carousel idx.
+  const built = mediaIds.map((id, idx) => {
+    const r = byId.get(id)!;
+    return { idx, imageKey: r.image_key, thumbKey: r.thumb_key, width: r.width, height: r.height };
+  });
+
+  const postId = newId();
+  const ts = now();
+  await c.env.DB.batch([
+    c.env.DB.prepare('INSERT INTO posts (id, user_id, caption, created_at) VALUES (?, ?, ?, ?)').bind(postId, me.id, caption, ts),
+    ...built.map((b) =>
+      c.env.DB
+        .prepare('INSERT INTO post_media (post_id, idx, image_key, thumb_key, width, height) VALUES (?, ?, ?, ?, ?, ?)')
+        .bind(postId, b.idx, b.imageKey, b.thumbKey, b.width, b.height),
+    ),
+    c.env.DB.prepare(`DELETE FROM pending_media WHERE user_id = ? AND id IN (${placeholders})`).bind(me.id, ...mediaIds),
+  ]);
+
+  c.executionCtx.waitUntil(fanOutNewPost(c.env, me, postId, caption));
+
+  const sign = await signerFor(c);
+  const media = await Promise.all(built.map(async (b) => ({
+    idx: b.idx,
+    image_url: await sign(b.imageKey),
+    thumb_url: await sign(b.thumbKey),
+    width: b.width,
+    height: b.height,
+  })));
+  return c.json({ id: postId, created_at: ts, media });
+}
+
 u.post('/posts', async (c) => {
   const me = c.get('user');
+
+  // New resilient path: photos were uploaded individually via POST /media and
+  // are referenced here by id (small JSON request, never times out). The
+  // legacy single-multipart path below stays for older installed app builds.
+  if ((c.req.header('Content-Type') ?? '').includes('application/json')) {
+    return createPostFromPendingMedia(c, me);
+  }
+
   const form = await c.req.formData();
   const caption = (form.get('caption') as string | null)?.slice(0, 2000) ?? null;
   const cap = getMaxPostMedia(c.env);

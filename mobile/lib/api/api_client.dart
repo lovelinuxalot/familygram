@@ -247,44 +247,81 @@ class ApiClient {
     final form = FormData.fromMap({
       'avatar': MultipartFile.fromBytes(bytes, filename: 'avatar.jpg', contentType: _mediaType('image/jpeg')),
     });
-    final r = await _dio.post('/me/avatar', data: form);
+    final r = await _dio.post('/me/avatar', data: form, options: _uploadOptions());
     _ensureOk(r);
     return Me.fromJson(r.data as Map<String, dynamic>);
   }
 
-  Future<Post> uploadPost({
-    required List<UploadMedia> media,
-    String? caption,
-  }) async {
-    if (media.isEmpty) {
-      throw ArgumentError('uploadPost: at least one media required');
+  // Uploads are split per-photo (POST /media) instead of one big multipart POST
+  // so a stalling uplink can't kill a whole multi-photo post. Each photo is
+  // small, but a 2000px WebP can still take a while on a slow link, so keep a
+  // generous send window. Avatar uploads reuse this too.
+  static Options _uploadOptions() => Options(sendTimeout: const Duration(seconds: 90));
+
+  // Retry only transient network failures — timeouts, dropped connections, 5xx.
+  // A 4xx (too large, wrong type, auth) surfaces as ApiException and won't get
+  // better on retry, so it's not handled here.
+  static bool _isRetryable(DioException e) {
+    switch (e.type) {
+      case DioExceptionType.sendTimeout:
+      case DioExceptionType.receiveTimeout:
+      case DioExceptionType.connectionTimeout:
+      case DioExceptionType.connectionError:
+        return true;
+      case DioExceptionType.badResponse:
+        return (e.response?.statusCode ?? 0) >= 500;
+      default:
+        return false;
     }
-    final fields = <String, dynamic>{
+  }
+
+  // Upload one photo (full + thumb) to the staging area and return its media id.
+  // Retries transient failures with backoff; rethrows a 4xx (ApiException) or a
+  // non-retryable error immediately. FormData is rebuilt each attempt because
+  // its byte streams are single-use.
+  Future<String> uploadMedia(UploadMedia m) async {
+    final imgExt = m.imageMime == 'image/png'
+        ? 'png'
+        : m.imageMime == 'image/webp'
+            ? 'webp'
+            : 'jpg';
+    Object lastError = StateError('uploadMedia: no attempts made');
+    for (var attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) {
+        await Future<void>.delayed(Duration(milliseconds: 400 * (1 << (attempt - 1))));
+      }
+      try {
+        final form = FormData.fromMap({
+          'image': MultipartFile.fromBytes(m.imageBytes, filename: 'image.$imgExt', contentType: _mediaType(m.imageMime)),
+          'thumb': MultipartFile.fromBytes(m.thumbBytes, filename: 'thumb.webp', contentType: _mediaType('image/webp')),
+          'width': m.width.toString(),
+          'height': m.height.toString(),
+        });
+        final r = await _dio.post('/media', data: form, options: _uploadOptions());
+        _ensureOk(r);
+        return (r.data as Map<String, dynamic>)['media_id'] as String;
+      } on ApiException {
+        rethrow; // 4xx — won't succeed on retry.
+      } on DioException catch (e) {
+        if (!_isRetryable(e)) rethrow;
+        lastError = e;
+      }
+    }
+    throw lastError;
+  }
+
+  // Assemble a post from photos already uploaded via [uploadMedia]. Small JSON
+  // request, so it effectively never times out. /posts returns a partial;
+  // refetch to get the full author/likes shape.
+  Future<Post> createPost({required List<String> mediaIds, String? caption}) async {
+    if (mediaIds.isEmpty) {
+      throw ArgumentError('createPost: at least one media id required');
+    }
+    final r = await _dio.post('/posts', data: {
       if (caption != null && caption.isNotEmpty) 'caption': caption,
-    };
-    for (var i = 0; i < media.length; i++) {
-      final m = media[i];
-      final imgExt = m.imageMime == 'image/png'
-          ? 'png'
-          : m.imageMime == 'image/webp'
-              ? 'webp'
-              : 'jpg';
-      fields['image_$i'] = MultipartFile.fromBytes(
-        m.imageBytes,
-        filename: 'image_$i.$imgExt',
-        contentType: _mediaType(m.imageMime),
-      );
-      fields['thumb_$i'] = MultipartFile.fromBytes(
-        m.thumbBytes,
-        filename: 'thumb_$i.webp',
-        contentType: _mediaType('image/webp'),
-      );
-      fields['width_$i'] = m.width.toString();
-      fields['height_$i'] = m.height.toString();
-    }
-    final r = await _dio.post('/posts', data: FormData.fromMap(fields));
+      'media_ids': mediaIds,
+    });
     _ensureOk(r);
-    // /posts returns a partial; refetch to get author/likes shape
     return getPost((r.data as Map<String, dynamic>)['id'] as String);
   }
 

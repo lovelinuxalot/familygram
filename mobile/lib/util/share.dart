@@ -5,6 +5,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../models/models.dart';
+import 'error_message.dart';
 
 // Download one of the post's full images to a temp file and hand it to the
 // system share sheet (Save to Photos, Messages, AirDrop, etc on iOS;
@@ -51,7 +52,7 @@ Future<void> sharePost(BuildContext context, Post post, {int idx = 0}) async {
   } catch (e) {
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not share: $e')),
+        SnackBar(content: Text('Could not share photo. ${friendlyError(e)}')),
       );
     }
   }

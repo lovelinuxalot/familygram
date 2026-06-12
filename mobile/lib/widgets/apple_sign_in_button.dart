@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../state/auth.dart';
+import '../util/error_message.dart';
 
 // Sign in with Apple button, matching Apple's Human Interface Guidelines:
 // black surface in light mode (inverse in dark), Apple logo, "Continue with
@@ -21,7 +22,7 @@ class _AppleSignInButtonState extends ConsumerState<AppleSignInButton> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(e.toString())),
+          SnackBar(content: Text('Could not sign in with Apple. ${friendlyError(e)}')),
         );
       }
     } finally {

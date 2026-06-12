@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../state/auth.dart';
+import '../util/error_message.dart';
 
 // Google-branded sign-in button. Closely matches Google's own button
 // guidelines: full-width pill, white surface with light border in light mode,
@@ -22,7 +23,7 @@ class _GoogleSignInButtonState extends ConsumerState<GoogleSignInButton> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(e.toString())),
+          SnackBar(content: Text('Could not sign in with Google. ${friendlyError(e)}')),
         );
       }
     } finally {

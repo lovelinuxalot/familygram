@@ -7,6 +7,7 @@ import '../util/share.dart';
 import '../models/models.dart';
 import '../state/auth.dart';
 import '../state/feed.dart';
+import '../util/error_message.dart';
 import '../util/time.dart';
 import '../widgets/caption.dart';
 import '../widgets/likes_sheet.dart';
@@ -64,7 +65,7 @@ class _PostDetailScreenState extends ConsumerState<PostDetailScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not post comment: $e')),
+          SnackBar(content: Text('Could not post comment. ${friendlyError(e)}')),
         );
       }
     } finally {
@@ -79,7 +80,7 @@ class _PostDetailScreenState extends ConsumerState<PostDetailScreen> {
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
-              ? Center(child: Text(_error.toString()))
+              ? Center(child: Text(friendlyError(_error)))
               : Center(
                   child: ConstrainedBox(
                     constraints: const BoxConstraints(maxWidth: 600),
@@ -142,7 +143,7 @@ class _PostDetailScreenState extends ConsumerState<PostDetailScreen> {
                           } catch (e) {
                             if (mounted) {
                               ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(content: Text('Could not delete: $e')),
+                                SnackBar(content: Text('Could not delete post. ${friendlyError(e)}')),
                               );
                             }
                           }
@@ -172,7 +173,7 @@ class _PostDetailScreenState extends ConsumerState<PostDetailScreen> {
                         ref.read(feedProvider.notifier).replacePost(post);
                         if (mounted) {
                           ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text('Could not update like: $e')),
+                            SnackBar(content: Text('Could not update like. ${friendlyError(e)}')),
                           );
                         }
                       }

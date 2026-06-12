@@ -11,6 +11,8 @@ import 'package:image_picker/image_picker.dart';
 import '../api/api_client.dart';
 import '../state/auth.dart';
 import '../state/feed.dart';
+import '../util/error_message.dart';
+import '../util/log.dart';
 import '../widgets/mention_field.dart';
 
 // Two-tier WebP encoding via native platform codecs (flutter_image_compress).
@@ -38,6 +40,7 @@ class _UploadScreenState extends ConsumerState<UploadScreen> {
   final List<_PickedItem> _items = [];
   bool _processing = false;
   bool _uploading = false;
+  int? _uploadingIndex; // which photo is currently uploading, for progress
   String? _error;
   final _caption = TextEditingController();
   final _picker = ImagePicker();
@@ -58,7 +61,7 @@ class _UploadScreenState extends ConsumerState<UploadScreen> {
       if (x == null) return;
       await _ingest([x]);
     } catch (e) {
-      setState(() { _processing = false; _error = e.toString(); });
+      setState(() { _processing = false; _error = friendlyError(e); });
     }
   }
 
@@ -77,7 +80,7 @@ class _UploadScreenState extends ConsumerState<UploadScreen> {
       final trimmed = picked.take(_remaining).toList();
       await _ingest(trimmed);
     } catch (e) {
-      setState(() { _processing = false; _error = e.toString(); });
+      setState(() { _processing = false; _error = friendlyError(e); });
     }
   }
 
@@ -97,7 +100,7 @@ class _UploadScreenState extends ConsumerState<UploadScreen> {
       });
     } catch (e) {
       if (!mounted) return;
-      setState(() { _processing = false; _error = e.toString(); });
+      setState(() { _processing = false; _error = friendlyError(e); });
     }
   }
 
@@ -105,21 +108,55 @@ class _UploadScreenState extends ConsumerState<UploadScreen> {
     setState(() { _items.removeAt(index); });
   }
 
+  String get _submitLabel {
+    if (_uploading) {
+      return _uploadingIndex != null
+          ? 'Uploading ${_uploadingIndex! + 1} of ${_items.length}…'
+          : 'Finishing…';
+    }
+    final uploaded = _items.where((it) => it.mediaId != null).length;
+    // Partial progress left over from a failed attempt → offer to resume.
+    return (uploaded > 0 && uploaded < _items.length) ? 'Retry' : 'Share';
+  }
+
   Future<void> _submit() async {
     if (_items.isEmpty) return;
     setState(() { _uploading = true; _error = null; });
+    final api = ref.read(apiClientProvider);
     try {
-      final api = ref.read(apiClientProvider);
-      final post = await api.uploadPost(
-        media: _items
-            .map((it) => UploadMedia(
-                  imageBytes: it.full,
-                  imageMime: 'image/webp',
-                  thumbBytes: it.thumb,
-                  width: it.width,
-                  height: it.height,
-                ))
-            .toList(),
+      // Payload-size telemetry (debug-toggle gated): an upload timeout usually
+      // means the payload is bigger than expected. Log per-image + total bytes
+      // so we can tell bloat from a slow uplink.
+      var total = 0;
+      for (var i = 0; i < _items.length; i++) {
+        final it = _items[i];
+        total += it.full.length + it.thumb.length;
+        flog('upload: image $i full=${(it.full.length / 1024).round()}KB '
+            'thumb=${(it.thumb.length / 1024).round()}KB');
+      }
+      flog('upload: ${_items.length} photos, total=${(total / 1024 / 1024).toStringAsFixed(2)}MB');
+
+      // Upload photos one at a time (small requests survive a flaky uplink).
+      // Skip any already uploaded on a prior attempt so a retry resumes.
+      for (var i = 0; i < _items.length; i++) {
+        final it = _items[i];
+        if (it.mediaId != null) continue;
+        setState(() => _uploadingIndex = i);
+        final id = await api.uploadMedia(UploadMedia(
+          imageBytes: it.full,
+          imageMime: 'image/webp',
+          thumbBytes: it.thumb,
+          width: it.width,
+          height: it.height,
+        ));
+        if (!mounted) return;
+        setState(() => it.mediaId = id);
+      }
+
+      // All photos are up — assemble the post in one small JSON request.
+      setState(() => _uploadingIndex = null);
+      final post = await api.createPost(
+        mediaIds: [for (final it in _items) it.mediaId!],
         caption: _caption.text.trim(),
       );
       ref.read(feedProvider.notifier).prepend(post);
@@ -129,9 +166,9 @@ class _UploadScreenState extends ConsumerState<UploadScreen> {
       );
       context.go('/');
     } catch (e) {
-      setState(() => _error = e.toString());
+      setState(() => _error = friendlyError(e));
     } finally {
-      if (mounted) setState(() => _uploading = false);
+      if (mounted) setState(() { _uploading = false; _uploadingIndex = null; });
     }
   }
 
@@ -179,7 +216,7 @@ class _UploadScreenState extends ConsumerState<UploadScreen> {
                     icon: _uploading
                         ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                         : const Icon(Icons.send),
-                    label: Text(_uploading ? 'Uploading…' : 'Share'),
+                    label: Text(_submitLabel),
                     onPressed: _uploading ? null : _submit,
                   ),
                   const SizedBox(height: 8),
@@ -303,6 +340,9 @@ class _PickedItem {
   final Uint8List thumb;
   final int width;
   final int height;
+  // Set once this photo has uploaded to /media. Kept across a failed submit so
+  // a retry only re-sends the photos that didn't make it.
+  String? mediaId;
   _PickedItem({required this.source, required this.full, required this.thumb, required this.width, required this.height});
 }
 

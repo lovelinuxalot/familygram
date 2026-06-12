@@ -10,6 +10,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../config.dart';
 import '../models/models.dart';
 import '../state/auth.dart';
+import '../util/error_message.dart';
 import '../widgets/feed_image.dart';
 import '../widgets/main_scaffold.dart';
 import '../widgets/user_avatar.dart';
@@ -62,7 +63,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not update avatar: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not update avatar. ${friendlyError(e)}')));
       }
     } finally {
       if (mounted) setState(() => _uploadingAvatar = false);
@@ -195,7 +196,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
       await ref.read(authProvider.notifier).logout();
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not delete: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not delete account. ${friendlyError(e)}')));
       }
     }
   }

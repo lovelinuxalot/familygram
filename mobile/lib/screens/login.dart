@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../state/auth.dart';
+import '../util/error_message.dart';
 import '../widgets/apple_sign_in_button.dart';
 import '../widgets/google_sign_in_button.dart';
 
@@ -101,9 +102,9 @@ class _DemoLoginFormState extends ConsumerState<_DemoLoginForm> {
     try {
       await ref.read(authProvider.notifier).signInWithDemo(email, password);
     } on ApiException catch (e) {
-      setState(() => _error = e.status == 401 ? 'Invalid demo credentials' : e.message);
+      setState(() => _error = e.status == 401 ? 'Invalid demo credentials' : friendlyError(e));
     } catch (e) {
-      setState(() => _error = e.toString());
+      setState(() => _error = friendlyError(e));
     } finally {
       if (mounted) setState(() => _submitting = false);
     }

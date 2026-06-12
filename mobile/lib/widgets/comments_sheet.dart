@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import '../models/models.dart';
 import '../state/auth.dart';
 import '../state/feed.dart';
+import '../util/error_message.dart';
 import '../util/time.dart';
 import 'mention_field.dart';
 import 'mention_text.dart';
@@ -84,7 +85,7 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not post comment: $e')),
+          SnackBar(content: Text('Could not post comment. ${friendlyError(e)}')),
         );
       }
     } finally {
@@ -141,7 +142,7 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
 
   Widget _body() {
     if (_loading) return const Center(child: CircularProgressIndicator());
-    if (_error != null) return Center(child: Padding(padding: const EdgeInsets.all(16), child: Text(_error.toString())));
+    if (_error != null) return Center(child: Padding(padding: const EdgeInsets.all(16), child: Text(friendlyError(_error))));
     if (_comments.isEmpty) {
       return const Center(child: Text('No comments yet. Be the first.', style: TextStyle(color: Colors.grey)));
     }

@@ -30,7 +30,7 @@ DART_DEFINES_ANDROID := --dart-define=API_BASE=$(DEV_API_BASE_ANDROID) --dart-de
 SHIP_ENV    := set -a && . scripts/ship.env && set +a
 
 .DEFAULT_GOAL := help
-.PHONY: help setup deps pods hooks clean dev dev-ios dev-android sim sim-ios sim-android \
+.PHONY: help setup deps pods hooks clean dev dev-prod dev-ios dev-android sim sim-ios sim-android \
         worker worker-migrate worker-migrate-prod worker-deploy \
         analyze tc icon splash arch-diagram \
         build build-ios build-android \
@@ -65,6 +65,10 @@ clean:  ## Wipe Flutter build artifacts + iOS Pods. Use before a fresh rebuild.
 
 dev:  ## Run the app on whatever device flutter picks (iPhone sim or Android emulator if booted).
 	cd $(MOBILE) && flutter run $(DART_DEFINES)
+
+dev-prod:  ## Run the app against the PRODUCTION backend (API_BASE/ORY_BASE from ship.env). For verifying against the same Worker the shipped app uses.
+	$(SHIP_ENV) && cd $(MOBILE) && flutter run \
+	  --dart-define=API_BASE="$$API_BASE" --dart-define=ORY_BASE="$$ORY_BASE"
 
 dev-ios:  ## Run the app on the first connected iOS device or simulator.
 	@dev=$$(xcrun simctl list devices booted | grep -E "Booted" | head -1 | sed 's/.*(\([0-9A-F-]*\)).*/\1/'); \

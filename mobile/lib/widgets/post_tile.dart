@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import '../models/models.dart';
 import '../state/auth.dart';
 import '../state/feed.dart';
+import '../util/error_message.dart';
 import '../util/share.dart';
 import '../util/time.dart';
 import 'caption.dart';
@@ -70,7 +71,7 @@ class PostTile extends ConsumerWidget {
                   ref.read(feedProvider.notifier).replacePost(post);
                   if (context.mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Could not update like: $e')),
+                      SnackBar(content: Text('Could not update like. ${friendlyError(e)}')),
                     );
                   }
                 }
@@ -144,7 +145,7 @@ class PostTile extends ConsumerWidget {
     } catch (e) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not delete: $e')),
+          SnackBar(content: Text('Could not delete post. ${friendlyError(e)}')),
         );
       }
     }

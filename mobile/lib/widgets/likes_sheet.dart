@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../models/models.dart';
 import '../state/auth.dart';
+import '../util/error_message.dart';
 import 'user_avatar.dart';
 
 // Bottom sheet shown on long-press of the heart icon. Lists every user who
@@ -74,7 +75,7 @@ class _LikesSheetState extends ConsumerState<_LikesSheet> {
   Widget _body() {
     if (_loading) return const Center(child: CircularProgressIndicator());
     if (_error != null) {
-      return Center(child: Padding(padding: const EdgeInsets.all(16), child: Text(_error.toString())));
+      return Center(child: Padding(padding: const EdgeInsets.all(16), child: Text(friendlyError(_error))));
     }
     if (_users.isEmpty) {
       return const Center(child: Text('No likes yet.', style: TextStyle(color: Colors.grey)));

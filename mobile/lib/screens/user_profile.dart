@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../models/models.dart';
 import '../state/auth.dart';
+import '../util/error_message.dart';
 import '../widgets/feed_image.dart';
 import '../widgets/user_avatar.dart';
 
@@ -58,7 +59,7 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
-              ? Center(child: Padding(padding: const EdgeInsets.all(16), child: Text(_error.toString())))
+              ? Center(child: Padding(padding: const EdgeInsets.all(16), child: Text(friendlyError(_error))))
               : _user == null
                   ? const Center(child: Text('User not found.'))
                   : Center(

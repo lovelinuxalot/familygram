@@ -72,6 +72,7 @@ export interface AppUser {
   display_name: string;
   avatar_key: string | null;
   is_admin: number;        // 0 or 1
+  is_demo: number;         // 0 or 1 — demo (App Review) sandbox world
   created_at: number;
 }
 

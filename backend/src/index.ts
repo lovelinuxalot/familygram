@@ -8,6 +8,7 @@ import type { Env, Variables, AppUser } from './types';
 import { isBootstrapAdmin, isDebugEnabled, getMaxPostMedia } from './types';
 import { oryAuth, requireAdmin, requireUser, isDemoModeEnabled, mintDemoToken, parseDemoUsers } from './auth';
 import { signMediaUrl, verifyMediaSignature } from './media';
+import { seedImage } from './demo_seed';
 import { sendPush } from './push';
 import { newId, now, slugifyEmailToUsername } from './util';
 import privacyHtml from './pages/privacy.html';
@@ -108,6 +109,16 @@ app.get('/media/:scope/:owner/:filename', async (c) => {
   if (!(await verifyMediaSignature(c.env, key, expiresAt, signature))) {
     return c.json({ error: 'invalid or expired signature' }, 403);
   }
+  // Demo-sandbox seed media is bundled in the Worker, not stored in R2. Serve it
+  // directly (still behind the same signed-URL check) so the demo feed has
+  // photos without any real family content. See demo_seed.ts / migration 0006.
+  if (c.req.param('scope') === 'seed') {
+    const bytes = seedImage(c.req.param('filename'));
+    if (!bytes) return c.notFound();
+    return new Response(bytes, {
+      headers: { 'content-type': 'image/png', 'cache-control': 'private, max-age=900' },
+    });
+  }
   const obj = await c.env.MEDIA.get(key);
   if (!obj) return c.notFound();
   const headers = new Headers();
@@ -126,9 +137,9 @@ authed.post('/me/finalize', async (c) => {
   const email = ory.traits.email.toLowerCase();
 
   const existing = await c.env.DB
-    .prepare('SELECT id, ory_id, email, username, display_name, avatar_key, is_admin, created_at FROM users WHERE ory_id = ?')
+    .prepare('SELECT id, ory_id, email, username, display_name, avatar_key, is_admin, is_demo, created_at FROM users WHERE ory_id = ?')
     .bind(ory.id)
-    .first<{ id: string; ory_id: string; email: string; username: string; display_name: string; avatar_key: string | null; is_admin: number; created_at: number }>();
+    .first<{ id: string; ory_id: string; email: string; username: string; display_name: string; avatar_key: string | null; is_admin: number; is_demo: number; created_at: number }>();
   if (existing) return c.json(await decorateUser(c, existing));
 
   const isDemo = c.get('isDemo');
@@ -172,8 +183,8 @@ authed.post('/me/finalize', async (c) => {
 
   await c.env.DB.batch([
     c.env.DB
-      .prepare('INSERT INTO users (id, ory_id, email, username, display_name, avatar_key, is_admin, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      .bind(userId, ory.id, email, username, display_name, avatarKey, isAdmin ? 1 : 0, ts),
+      .prepare('INSERT INTO users (id, ory_id, email, username, display_name, avatar_key, is_admin, is_demo, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .bind(userId, ory.id, email, username, display_name, avatarKey, isAdmin ? 1 : 0, isDemo ? 1 : 0, ts),
     c.env.DB
       .prepare('UPDATE allowlist SET used_by = ?, used_at = ? WHERE email = ? AND used_by IS NULL')
       .bind(userId, ts, email),
@@ -181,7 +192,7 @@ authed.post('/me/finalize', async (c) => {
 
   return c.json(await decorateUser(c, {
     id: userId, ory_id: ory.id, email, username, display_name,
-    avatar_key: avatarKey, is_admin: isAdmin ? 1 : 0, created_at: ts,
+    avatar_key: avatarKey, is_admin: isAdmin ? 1 : 0, is_demo: isDemo ? 1 : 0, created_at: ts,
   }));
 });
 
@@ -341,7 +352,7 @@ u.delete('/admin/allowlist/:email', requireAdmin, async (c) => {
 
 u.get('/admin/users', requireAdmin, async (c) => {
   const rows = await c.env.DB
-    .prepare('SELECT id, email, username, display_name, avatar_key, is_admin, created_at FROM users ORDER BY created_at DESC')
+    .prepare('SELECT id, email, username, display_name, avatar_key, is_admin, created_at FROM users WHERE is_demo = 0 ORDER BY created_at DESC')
     .all();
   const items = await Promise.all((rows.results ?? []).map((row) => decorateUser(c, row)));
   return c.json({ items });
@@ -807,6 +818,18 @@ async function fanOutNewComment(
   }
 }
 
+// Demo (App Review) and real users live in isolated worlds: a post is only
+// visible to a viewer whose is_demo matches the post author's. Throws 404 (not
+// 403) so a demo user can't probe for the existence of real posts. Use this on
+// every per-post read/write that takes a :id from the client.
+async function assertPostVisible(c: Context<App>, me: AppUser, postId: string): Promise<void> {
+  const row = await c.env.DB
+    .prepare('SELECT 1 AS ok FROM posts p JOIN users u ON u.id = p.user_id WHERE p.id = ? AND u.is_demo = ?')
+    .bind(postId, me.is_demo)
+    .first();
+  if (!row) throw new HTTPException(404, { message: 'post not found' });
+}
+
 // Cursor is the created_at of the last seen item.
 u.get('/feed', async (c) => {
   const me = c.get('user');
@@ -824,11 +847,11 @@ u.get('/feed', async (c) => {
         EXISTS(SELECT 1 FROM likes l2 WHERE l2.post_id = p.id AND l2.user_id = ?) AS liked
       FROM posts p
       JOIN users u ON u.id = p.user_id
-      WHERE p.created_at < ?
+      WHERE p.created_at < ? AND u.is_demo = ?
       ORDER BY p.created_at DESC
       LIMIT ?
     `)
-    .bind(me.id, cursorTs, limit)
+    .bind(me.id, cursorTs, me.is_demo, limit)
     .all();
 
   const postRows = rows.results ?? [];
@@ -841,6 +864,7 @@ u.get('/feed', async (c) => {
 // Literal-path routes must come before parametric /users/:id so "search" etc.
 // aren't treated as a user id.
 u.get('/users/search', async (c) => {
+  const me = c.get('user');
   const q = (c.req.query('q') ?? '').trim().toLowerCase();
   if (q.length === 0) return c.json({ items: [] });
   const like = `${q.replace(/[%_]/g, '\\$&')}%`;
@@ -848,36 +872,40 @@ u.get('/users/search', async (c) => {
     .prepare(`
       SELECT id, username, display_name, avatar_key
       FROM users
-      WHERE LOWER(username) LIKE ? ESCAPE '\\'
-         OR LOWER(display_name) LIKE ? ESCAPE '\\'
+      WHERE (LOWER(username) LIKE ? ESCAPE '\\'
+         OR LOWER(display_name) LIKE ? ESCAPE '\\')
+        AND is_demo = ?
       ORDER BY username ASC
       LIMIT 8
     `)
-    .bind(like, like)
+    .bind(like, like, me.is_demo)
     .all();
   const items = await Promise.all((rows.results ?? []).map((row) => decorateUser(c, row)));
   return c.json({ items });
 });
 
 u.get('/users/by-username/:username', async (c) => {
+  const me = c.get('user');
   const row = await c.env.DB
-    .prepare('SELECT id, email, username, display_name, avatar_key, is_admin, created_at FROM users WHERE username = ?')
-    .bind(c.req.param('username').toLowerCase())
+    .prepare('SELECT id, email, username, display_name, avatar_key, is_admin, created_at FROM users WHERE username = ? AND is_demo = ?')
+    .bind(c.req.param('username').toLowerCase(), me.is_demo)
     .first();
   if (!row) throw new HTTPException(404, { message: 'user not found' });
   return c.json(await decorateUser(c, row));
 });
 
 u.get('/users/:id', async (c) => {
+  const me = c.get('user');
   const row = await c.env.DB
-    .prepare('SELECT id, email, username, display_name, avatar_key, is_admin, created_at FROM users WHERE id = ?')
-    .bind(c.req.param('id'))
+    .prepare('SELECT id, email, username, display_name, avatar_key, is_admin, created_at FROM users WHERE id = ? AND is_demo = ?')
+    .bind(c.req.param('id'), me.is_demo)
     .first();
   if (!row) throw new HTTPException(404, { message: 'user not found' });
   return c.json(await decorateUser(c, row));
 });
 
 u.get('/users/:id/posts', async (c) => {
+  const me = c.get('user');
   const userId = c.req.param('id');
   const limit = Math.min(Number(c.req.query('limit') ?? 30), 60);
   const cursor = c.req.query('cursor');
@@ -888,12 +916,13 @@ u.get('/users/:id/posts', async (c) => {
              pm.image_key, pm.thumb_key, pm.width, pm.height,
              (SELECT COUNT(*) FROM post_media WHERE post_id = p.id) AS media_count
       FROM posts p
+      JOIN users u ON u.id = p.user_id
       LEFT JOIN post_media pm ON pm.post_id = p.id AND pm.idx = 0
-      WHERE p.user_id = ? AND p.created_at < ?
+      WHERE p.user_id = ? AND p.created_at < ? AND u.is_demo = ?
       ORDER BY p.created_at DESC
       LIMIT ?
     `)
-    .bind(userId, cursorTs, limit)
+    .bind(userId, cursorTs, me.is_demo, limit)
     .all();
   const rawItems = rows.results ?? [];
   const items = await Promise.all(rawItems.map((row) => decorateThumb(c, row)));
@@ -912,9 +941,9 @@ u.get('/posts/:id', async (c) => {
              (SELECT COUNT(*) FROM comments cm WHERE cm.post_id = p.id) AS comment_count,
              EXISTS(SELECT 1 FROM likes l2 WHERE l2.post_id = p.id AND l2.user_id = ?) AS liked
       FROM posts p JOIN users u ON u.id = p.user_id
-      WHERE p.id = ?
+      WHERE p.id = ? AND u.is_demo = ?
     `)
-    .bind(me.id, id)
+    .bind(me.id, id, me.is_demo)
     .first();
   if (!row) throw new HTTPException(404, { message: 'post not found' });
   const mediaByPost = await fetchMediaForPosts(c, [id]);
@@ -941,6 +970,7 @@ u.delete('/posts/:id', async (c) => {
 u.post('/posts/:id/like', async (c) => {
   const me = c.get('user');
   const id = c.req.param('id');
+  await assertPostVisible(c, me, id);
   await c.env.DB
     .prepare('INSERT OR IGNORE INTO likes (post_id, user_id, created_at) VALUES (?, ?, ?)')
     .bind(id, me.id, now())
@@ -959,7 +989,9 @@ u.delete('/posts/:id/like', async (c) => {
 // sheet in the mobile client. Capped at 200 — at family scale this is "all
 // of them"; if a viral post ever shows up we can paginate.
 u.get('/posts/:id/likes', async (c) => {
+  const me = c.get('user');
   const id = c.req.param('id');
+  await assertPostVisible(c, me, id);
   const rows = await c.env.DB
     .prepare(`
       SELECT u.id, u.username, u.display_name, u.avatar_key, l.created_at
@@ -975,7 +1007,9 @@ u.get('/posts/:id/likes', async (c) => {
 });
 
 u.get('/posts/:id/comments', async (c) => {
+  const me = c.get('user');
   const id = c.req.param('id');
+  await assertPostVisible(c, me, id);
   const rows = await c.env.DB
     .prepare(`
       SELECT cm.id, cm.body, cm.created_at, cm.user_id,
@@ -998,8 +1032,7 @@ u.post('/posts/:id/comments', async (c) => {
   const text = body?.body?.trim();
   if (!text) throw new HTTPException(400, { message: 'body required' });
   if (text.length > 1000) throw new HTTPException(400, { message: 'comment too long' });
-  const exists = await c.env.DB.prepare('SELECT id FROM posts WHERE id = ?').bind(id).first();
-  if (!exists) throw new HTTPException(404, { message: 'post not found' });
+  await assertPostVisible(c, me, id);
   const commentId = newId();
   const ts = now();
   await c.env.DB

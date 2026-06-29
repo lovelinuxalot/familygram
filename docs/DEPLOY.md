@@ -219,8 +219,12 @@ Demo mode is **off by default** — the form doesn't render and the endpoint 404
   - `GET /config` returns `{"demo_mode": true}`.
   - `POST /auth/demo` accepts credentials from that list and returns a locally-signed bearer token (HMAC-SHA256 over a 24 h–TTL payload, signed with `MEDIA_SIGNING_SECRET`).
   - `oryAuth` recognizes the `demo.` prefix and verifies tokens locally — no Ory call.
-  - `/me/finalize` bypasses the allowlist for demo identities so the reviewer is auto-onboarded.
+  - `/me/finalize` bypasses the allowlist for demo identities so the reviewer is auto-onboarded, and tags the user `is_demo = 1`.
 - **Mobile gate**: the login screen fetches `/config` on mount and only renders the email/password form when `demo_mode == true`.
+
+### Sandbox isolation (privacy)
+
+Demo accounts are confined to an **isolated demo world** — they never see real family content and the family never sees theirs. Every per-user/per-post read and write in the Worker is scoped by the viewer's `is_demo` flag (feed, post detail, comments, likes, user search/profile), so a reviewer signed into a demo account only ever sees a small set of seeded demo posts (`migration 0006`, authored by `is_demo` seed users) and any content they create themselves. Seed photos are bundled gradients served by the `/media` `seed/...` path from `backend/src/demo_seed.ts` — no R2 objects, no real photos. Push fan-out already skips `demo:` identities, so demo activity never notifies the family. Demo/seed accounts are also hidden from the admin **Members** list. Regenerate seed images with `python3 scripts/gen_seed.py`.
 
 The mobile UI flag is purely cosmetic — even a tampered client showing the form gets a 404 from `/auth/demo` when `DEMO_USERS` is empty. The single source of truth is the backend env var.
 

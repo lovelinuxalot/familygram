@@ -143,7 +143,7 @@ function timingSafeEqual(a: string, b: string): boolean {
 export const requireUser: MiddlewareHandler<{ Bindings: Env; Variables: Variables }> = async (c, next) => {
   const ory = c.get('oryIdentity');
   const row = await c.env.DB
-    .prepare('SELECT id, ory_id, email, username, display_name, avatar_key, is_admin, created_at FROM users WHERE ory_id = ?')
+    .prepare('SELECT id, ory_id, email, username, display_name, avatar_key, is_admin, is_demo, created_at FROM users WHERE ory_id = ?')
     .bind(ory.id)
     .first<AppUser>();
   if (!row) {

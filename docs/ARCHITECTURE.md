@@ -40,6 +40,8 @@ sequenceDiagram
     Ory-->>W: identity { id, traits.email, ... }
     W->>DB: SELECT user WHERE ory_id=...
     DB-->>W: AppUser row
+    W->>DB: SELECT tenant memberships
+    DB-->>W: [{tenant_id, name, role}]
     W->>DB: INSERT OR IGNORE INTO likes ...
     DB-->>W: ok
     W-->>CF: 200 { ok: true }
@@ -68,10 +70,27 @@ Three things to notice:
 
 ---
 
+## Multi-tenancy (families)
+
+One deployment hosts several isolated families ("tenants"). Users can belong to more than one — e.g. a couple that's in both spouses' family feeds.
+
+- **`tenants` + `tenant_members`** is a many-to-many with a per-membership `role` (`admin`/`member` — stored for future per-tenant enforcement; today `users.is_admin` is still the global admin gate). Migration 0007 backfilled the original family as tenant `default` and the App Review sandbox as tenant `demo`, so tenant scoping subsumes the old `users.is_demo` isolation (the column remains for the demo-token auth path).
+- **Every post belongs to exactly one tenant** (`posts.tenant_id`). "Post to both families" creates one sibling post row per tenant **sharing the same R2 keys** — media is stored once, but each family gets its own like/comment thread (a comment meant for one family is never shown to the other). `DELETE /posts/:id` only removes R2 objects no surviving `post_media` row still references.
+- **Active tenant**: the app sends `X-Tenant-Id` on every request; `requireUser` validates it against the caller's memberships and scopes feed/profile/search queries to it. Post detail (and like/comment on it) accepts *any* of the caller's tenants, so push deep-links from the other family work before the client switches. **No header → first membership**, which keeps pre-tenancy app builds working unchanged.
+- **Allowlist is tenant-scoped** (PK `tenant_id, email`): the same email can be invited to several families; first sign-in redeems all pending rows into memberships. Inviting an email that already has an account adds the membership directly (finalize only runs on first sign-in).
+- **Push fan-out** targets the union of members across the tenants a post went to; a dual-tenant recipient gets one push, deep-linked to the sibling post in a tenant they belong to. Payloads carry `tenant_id` so the app can switch context on tap.
+- Mobile: the active tenant persists in secure storage (`state/tenant.dart`); the feed app bar becomes a family switcher only when the user has 2+ memberships, and the upload composer shows audience chips.
+
+---
+
 ## Data model
 
 ```mermaid
 erDiagram
+    TENANTS ||--o{ TENANT_MEMBERS : has
+    USERS   ||--o{ TENANT_MEMBERS : "belongs to 1..N"
+    TENANTS ||--o{ POSTS          : scopes
+    TENANTS ||--o{ ALLOWLIST      : "invites into"
     USERS ||--o{ POSTS      : authors
     USERS ||--o{ COMMENTS   : writes
     USERS ||--o{ LIKES      : gives
@@ -80,6 +99,17 @@ erDiagram
     POSTS ||--o{ COMMENTS   : has
     POSTS ||--o{ LIKES      : receives
 
+    TENANTS {
+        text id PK
+        text name
+        int created_at
+    }
+    TENANT_MEMBERS {
+        text tenant_id PK
+        text user_id PK
+        text role
+        int created_at
+    }
     USERS {
         text id PK
         text ory_id UK
@@ -88,9 +118,11 @@ erDiagram
         text display_name
         text avatar_key
         int is_admin
+        int is_demo
         int created_at
     }
     ALLOWLIST {
+        text tenant_id PK
         text email PK
         text added_by FK
         int added_at
@@ -100,6 +132,7 @@ erDiagram
     POSTS {
         text id PK
         text user_id FK
+        text tenant_id FK
         text caption
         int created_at
     }
@@ -135,8 +168,7 @@ Migrations live in `backend/migrations/`. Run them with `make worker-migrate` (l
 
 ## Storage layout in R2
 
-- `posts/<user_id>/<post_id>_<idx>.<ext>`        — full image at `idx` in the carousel, 2000 px max edge, WebP q82 (older single-photo posts from before the multi-photo migration use the legacy `posts/<user_id>/<post_id>.jpg` shape; either key is fine, we read whatever `post_media.image_key` says).
-- `posts/<user_id>/<post_id>_<idx>_thumb.<ext>` — display tier, 1200 px max edge, WebP q80. Served on the feed and in the comments sheet.
+- `posts/<user_id>/<media_id>.<ext>` / `posts/<user_id>/<media_id>_thumb.<ext>` — staged-upload flow: full image (2000 px max edge, WebP q82) and display tier (1200 px, WebP q80). Keys are minted per *upload*, not per post — a "post to both families" pair of sibling posts points at the same objects. Older posts use the legacy `posts/<user_id>/<post_id>_<idx>.<ext>` or `posts/<user_id>/<post_id>.jpg` shapes; any key is fine, we read whatever `post_media.image_key` says.
 - `avatars/<user_id>/<version>.jpg`             — square 256 px avatar; version suffix busts client caches across uploads.
 
 `<idx>` is 0-based and matches the `POST_MEDIA.idx` column, so the carousel order in the UI follows the order on disk.
@@ -151,6 +183,8 @@ GET /media/<scope>/<owner>/<filename>?e=<unix-expiry>&s=<base64url(HMAC)>
 
 The Worker signs URLs in the response payloads (feed, post, comments, user) using a `MEDIA_SIGNING_SECRET` Worker secret. The `/media/...` route verifies signature + expiry before fetching from R2. Leaked URLs stop working when they expire.
 
+Signed URLs carry no user or tenant claim — authorization happens where the URL is *minted* (every query that decorates a post is tenant-scoped). Consequence: after removing someone from a family, media URLs they already hold keep working for up to the 1-hour TTL. Accepted trade-off for a family app.
+
 Client side, `cached_network_image` is configured with a stable `cacheKey` (the post id + tier) so URL rotation across hours doesn't trigger re-download — the disk cache hits even with a fresh URL.
 
 ---
@@ -159,6 +193,8 @@ Client side, `cached_network_image` is configured with a stable `cacheKey` (the 
 
 - **JWT tokenizer template** in Ory → drop the per-request whoami hop (saves ~50–100 ms / request).
 - **Passkey re-auth** alongside Google sign-in → faster session refresh.
-- **FCM push** for new-post and @mention notifications (requires paid Apple Dev).
+- **Per-tenant roles** — `tenant_members.role` is already stored; enforce it so each family can have its own admin instead of the global `users.is_admin`.
+- **Feed dedup for dual-tenant viewers** — a "post to both" pair shows up once per family feed; a member of both sees it twice when switching. Cosmetic only.
+- **Retire `users.is_demo`** — the demo world is tenant `demo` now; the flag only survives for the demo-token auth path and the admin users filter.
 - **Cloudflare Queues** for fan-out (e.g., notify all family members when a post is created).
 - **Cloudflare Stream** when video lands (paid, but native HLS + transcoding worth it).

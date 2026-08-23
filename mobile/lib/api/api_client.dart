@@ -50,6 +50,7 @@ class ApiClient {
 
   final Dio _dio;
   String? _token;
+  String? _activeTenantId;
 
   ApiClient() : _dio = Dio(BaseOptions(
           baseUrl: AppConfig.apiBase,
@@ -61,11 +62,16 @@ class ApiClient {
         )) {
     _dio.interceptors.add(InterceptorsWrapper(onRequest: (opts, h) {
       if (_token != null) opts.headers['Authorization'] = 'Bearer $_token';
+      if (_activeTenantId != null) opts.headers['X-Tenant-Id'] = _activeTenantId;
       h.next(opts);
     }));
   }
 
   void setToken(String? t) => _token = t;
+
+  // Scopes subsequent requests to one family. Null (e.g. before /me resolves
+  // or after logout) lets the server fall back to the user's first membership.
+  void setActiveTenant(String? tenantId) => _activeTenantId = tenantId;
 
   // Public, unauthenticated. The login screen calls this on mount to decide
   // whether to render the demo email/password form. The flag is sourced from
@@ -128,13 +134,53 @@ class ApiClient {
         .toList();
   }
 
-  Future<void> adminAddAllowlist(String email) async {
-    final r = await _dio.post('/admin/allowlist', data: {'email': email});
+  Future<void> adminAddAllowlist(String email, {required String tenantId}) async {
+    final r = await _dio.post('/admin/allowlist', data: {'email': email, 'tenant_id': tenantId});
     _ensureOk(r);
   }
 
-  Future<void> adminRemoveAllowlist(String email) async {
-    final r = await _dio.delete('/admin/allowlist/${Uri.encodeComponent(email)}');
+  Future<void> adminRemoveAllowlist(String email, {required String tenantId}) async {
+    final r = await _dio.delete(
+      '/admin/allowlist/${Uri.encodeComponent(email)}',
+      queryParameters: {'tenant_id': tenantId},
+    );
+    _ensureOk(r);
+  }
+
+  Future<List<AdminTenant>> adminListTenants() async {
+    final r = await _dio.get('/admin/tenants');
+    _ensureOk(r);
+    return ((r.data as Map<String, dynamic>)['items'] as List)
+        .map((j) => AdminTenant.fromJson(j as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<AdminTenant> adminCreateTenant(String name) async {
+    final r = await _dio.post('/admin/tenants', data: {'name': name});
+    _ensureOk(r);
+    return AdminTenant.fromJson(r.data as Map<String, dynamic>);
+  }
+
+  Future<void> adminRenameTenant(String tenantId, String name) async {
+    final r = await _dio.patch('/admin/tenants/$tenantId', data: {'name': name});
+    _ensureOk(r);
+  }
+
+  Future<List<UserProfile>> adminListTenantMembers(String tenantId) async {
+    final r = await _dio.get('/admin/tenants/$tenantId/members');
+    _ensureOk(r);
+    return ((r.data as Map<String, dynamic>)['items'] as List)
+        .map((j) => UserProfile.fromJson(j as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<void> adminAddTenantMember(String tenantId, String userId) async {
+    final r = await _dio.post('/admin/tenants/$tenantId/members', data: {'user_id': userId});
+    _ensureOk(r);
+  }
+
+  Future<void> adminRemoveTenantMember(String tenantId, String userId) async {
+    final r = await _dio.delete('/admin/tenants/$tenantId/members/$userId');
     _ensureOk(r);
   }
 
@@ -313,13 +359,14 @@ class ApiClient {
   // Assemble a post from photos already uploaded via [uploadMedia]. Small JSON
   // request, so it effectively never times out. /posts returns a partial;
   // refetch to get the full author/likes shape.
-  Future<Post> createPost({required List<String> mediaIds, String? caption}) async {
+  Future<Post> createPost({required List<String> mediaIds, String? caption, List<String>? tenantIds}) async {
     if (mediaIds.isEmpty) {
       throw ArgumentError('createPost: at least one media id required');
     }
     final r = await _dio.post('/posts', data: {
       if (caption != null && caption.isNotEmpty) 'caption': caption,
       'media_ids': mediaIds,
+      if (tenantIds != null && tenantIds.isNotEmpty) 'tenant_ids': tenantIds,
     });
     _ensureOk(r);
     return getPost((r.data as Map<String, dynamic>)['id'] as String);

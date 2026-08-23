@@ -36,6 +36,7 @@ class PostMedia {
 class Post {
   final String id;
   final String userId;
+  final String? tenantId;
   final List<PostMedia> media;
   final String? caption;
   final int createdAt;
@@ -47,6 +48,7 @@ class Post {
   Post({
     required this.id,
     required this.userId,
+    this.tenantId,
     required this.media,
     required this.caption,
     required this.createdAt,
@@ -65,7 +67,7 @@ class Post {
   int? get height => media.first.height;
 
   Post copyWith({int? likeCount, int? commentCount, bool? liked, List<PostMedia>? media}) => Post(
-        id: id, userId: userId,
+        id: id, userId: userId, tenantId: tenantId,
         media: media ?? this.media,
         caption: caption, createdAt: createdAt,
         author: author,
@@ -77,6 +79,7 @@ class Post {
   factory Post.fromJson(Map<String, dynamic> j) => Post(
         id: j['id'] as String,
         userId: j['user_id'] as String,
+        tenantId: j['tenant_id'] as String?,
         media: ((j['media'] as List?) ?? const [])
             .map((m) => PostMedia.fromJson(m as Map<String, dynamic>))
             .toList(),
@@ -165,6 +168,19 @@ class PostThumb {
       );
 }
 
+// One family the current user belongs to (from /me `tenants`).
+class TenantMembership {
+  final String id;
+  final String name;
+  final String role; // 'admin' | 'member'
+  TenantMembership({required this.id, required this.name, required this.role});
+  factory TenantMembership.fromJson(Map<String, dynamic> j) => TenantMembership(
+        id: j['id'] as String,
+        name: j['name'] as String,
+        role: j['role'] as String? ?? 'member',
+      );
+}
+
 class Me {
   final String id;
   final String email;
@@ -172,7 +188,8 @@ class Me {
   final String displayName;
   final String? avatarUrl;
   final bool isAdmin;
-  Me({required this.id, required this.email, required this.username, required this.displayName, this.avatarUrl, this.isAdmin = false});
+  final List<TenantMembership> tenants;
+  Me({required this.id, required this.email, required this.username, required this.displayName, this.avatarUrl, this.isAdmin = false, this.tenants = const []});
   factory Me.fromJson(Map<String, dynamic> j) => Me(
         id: j['id'] as String,
         email: j['email'] as String,
@@ -180,20 +197,42 @@ class Me {
         displayName: j['display_name'] as String,
         avatarUrl: j['avatar_url'] as String?,
         isAdmin: (j['is_admin'] as int? ?? 0) == 1,
+        tenants: ((j['tenants'] as List?) ?? const [])
+            .map((t) => TenantMembership.fromJson(t as Map<String, dynamic>))
+            .toList(),
+      );
+}
+
+// Admin-panel view of a family (from /admin/tenants).
+class AdminTenant {
+  final String id;
+  final String name;
+  final int createdAt;
+  final int memberCount;
+  AdminTenant({required this.id, required this.name, required this.createdAt, required this.memberCount});
+  factory AdminTenant.fromJson(Map<String, dynamic> j) => AdminTenant(
+        id: j['id'] as String,
+        name: j['name'] as String,
+        createdAt: j['created_at'] as int,
+        memberCount: j['member_count'] as int? ?? 0,
       );
 }
 
 class AllowlistEntry {
   final String email;
+  final String tenantId;
+  final String? tenantName;
   final int addedAt;
   final int? usedAt;
   final String? usedBy;
   final String? userUsername;
   final String? userDisplayName;
-  AllowlistEntry({required this.email, required this.addedAt, this.usedAt, this.usedBy, this.userUsername, this.userDisplayName});
+  AllowlistEntry({required this.email, required this.tenantId, this.tenantName, required this.addedAt, this.usedAt, this.usedBy, this.userUsername, this.userDisplayName});
   bool get redeemed => usedBy != null;
   factory AllowlistEntry.fromJson(Map<String, dynamic> j) => AllowlistEntry(
         email: j['email'] as String,
+        tenantId: j['tenant_id'] as String? ?? 'default',
+        tenantName: j['tenant_name'] as String?,
         addedAt: j['added_at'] as int,
         usedAt: j['used_at'] as int?,
         usedBy: j['used_by'] as String?,
@@ -210,7 +249,8 @@ class AdminUser {
   final String? avatarUrl;
   final bool isAdmin;
   final int createdAt;
-  AdminUser({required this.id, required this.email, required this.username, required this.displayName, this.avatarUrl, required this.isAdmin, required this.createdAt});
+  final String? tenantNames; // comma-joined family names, for the admin list
+  AdminUser({required this.id, required this.email, required this.username, required this.displayName, this.avatarUrl, required this.isAdmin, required this.createdAt, this.tenantNames});
   factory AdminUser.fromJson(Map<String, dynamic> j) => AdminUser(
         id: j['id'] as String,
         email: j['email'] as String,
@@ -219,5 +259,6 @@ class AdminUser {
         avatarUrl: j['avatar_url'] as String?,
         isAdmin: (j['is_admin'] as int? ?? 0) == 1,
         createdAt: j['created_at'] as int,
+        tenantNames: j['tenant_names'] as String?,
       );
 }

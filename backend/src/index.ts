@@ -5,7 +5,7 @@ import { logger } from 'hono/logger';
 import { HTTPException } from 'hono/http-exception';
 
 import type { Env, Variables, AppUser } from './types';
-import { isBootstrapAdmin, isDebugEnabled, getMaxPostMedia } from './types';
+import { isBootstrapAdmin, isDebugEnabled, getMaxPostMedia, DEFAULT_TENANT_ID, DEMO_TENANT_ID } from './types';
 import { oryAuth, requireAdmin, requireUser, isDemoModeEnabled, mintDemoToken, parseDemoUsers } from './auth';
 import { signMediaUrl, verifyMediaSignature } from './media';
 import { seedImage } from './demo_seed';
@@ -144,14 +144,19 @@ authed.post('/me/finalize', async (c) => {
 
   const isDemo = c.get('isDemo');
   const isAdmin = isBootstrapAdmin(c.env, email);
-  let allowed = isAdmin || isDemo;
-  if (!allowed) {
-    const entry = await c.env.DB
-      .prepare('SELECT email, used_by FROM allowlist WHERE email = ?')
+  // One allowlist row per tenant the email was invited to — redeeming creates
+  // a membership for each. Bootstrap admins and demo identities get their
+  // fixed tenant even with no allowlist row.
+  const entries = (
+    await c.env.DB
+      .prepare('SELECT tenant_id FROM allowlist WHERE email = ? AND used_by IS NULL')
       .bind(email)
-      .first<{ email: string; used_by: string | null }>();
-    allowed = !!entry && !entry.used_by;
-  }
+      .all<{ tenant_id: string }>()
+  ).results;
+  const tenantIds = new Set<string>(entries.map((e) => e.tenant_id));
+  if (isDemo) tenantIds.add(DEMO_TENANT_ID);
+  else if (isAdmin) tenantIds.add(DEFAULT_TENANT_ID);
+  const allowed = tenantIds.size > 0;
   if (!allowed) {
     return c.json({
       error: 'not_allowed',
@@ -185,6 +190,11 @@ authed.post('/me/finalize', async (c) => {
     c.env.DB
       .prepare('INSERT INTO users (id, ory_id, email, username, display_name, avatar_key, is_admin, is_demo, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .bind(userId, ory.id, email, username, display_name, avatarKey, isAdmin ? 1 : 0, isDemo ? 1 : 0, ts),
+    ...[...tenantIds].map((t) =>
+      c.env.DB
+        .prepare('INSERT OR IGNORE INTO tenant_members (tenant_id, user_id, role, created_at) VALUES (?, ?, ?, ?)')
+        .bind(t, userId, isAdmin ? 'admin' : 'member', ts),
+    ),
     c.env.DB
       .prepare('UPDATE allowlist SET used_by = ?, used_at = ? WHERE email = ? AND used_by IS NULL')
       .bind(userId, ts, email),
@@ -209,7 +219,14 @@ async function uniqueUsername(db: D1Database, email: string): Promise<string> {
 const u = new Hono<App>();
 u.use('*', requireUser);
 
-u.get('/me', async (c) => c.json(await decorateUser(c, c.get('user') as unknown as Record<string, unknown>)));
+u.get('/me', async (c) => {
+  const user = await decorateUser(c, c.get('user') as unknown as Record<string, unknown>);
+  return c.json({
+    ...user,
+    tenants: c.get('tenants').map((t) => ({ id: t.tenant_id, name: t.name, role: t.role })),
+    active_tenant_id: c.get('activeTenantId'),
+  });
+});
 
 // Wipes posts, comments, likes, allowlist row, and user row. Best-effort R2 cleanup.
 // Does NOT delete the Ory identity (= the user's Google account, out of our control).
@@ -236,6 +253,7 @@ u.delete('/me', async (c) => {
     c.env.DB.prepare('DELETE FROM comments WHERE user_id = ?').bind(me.id),
     c.env.DB.prepare('DELETE FROM posts WHERE user_id = ?').bind(me.id),
     c.env.DB.prepare('DELETE FROM device_tokens WHERE user_id = ?').bind(me.id),
+    c.env.DB.prepare('DELETE FROM tenant_members WHERE user_id = ?').bind(me.id),
     c.env.DB.prepare('UPDATE allowlist SET used_by = NULL, used_at = NULL WHERE used_by = ?').bind(me.id),
     c.env.DB.prepare('DELETE FROM allowlist WHERE email = ?').bind(me.email),
     c.env.DB.prepare('DELETE FROM users WHERE id = ?').bind(me.id),
@@ -321,9 +339,10 @@ u.delete('/me/device-tokens', async (c) => {
 u.get('/admin/allowlist', requireAdmin, async (c) => {
   const rows = await c.env.DB
     .prepare(`
-      SELECT a.email, a.added_at, a.used_at, a.used_by,
+      SELECT a.tenant_id, t.name AS tenant_name, a.email, a.added_at, a.used_at, a.used_by,
              u.username AS user_username, u.display_name AS user_display_name
       FROM allowlist a
+      JOIN tenants t ON t.id = a.tenant_id
       LEFT JOIN users u ON u.id = a.used_by
       ORDER BY a.added_at DESC
     `)
@@ -333,29 +352,142 @@ u.get('/admin/allowlist', requireAdmin, async (c) => {
 
 u.post('/admin/allowlist', requireAdmin, async (c) => {
   const me = c.get('user');
-  const body = await c.req.json<{ email: string }>().catch(() => null);
+  const body = await c.req.json<{ email: string; tenant_id?: string }>().catch(() => null);
   const email = body?.email?.trim().toLowerCase();
+  const tenantId = body?.tenant_id ?? DEFAULT_TENANT_ID;
   if (!email) throw new HTTPException(400, { message: 'email required' });
   if (!/^.+@.+\..+$/.test(email)) throw new HTTPException(400, { message: 'invalid email' });
-  await c.env.DB
-    .prepare('INSERT OR IGNORE INTO allowlist (email, added_by, added_at) VALUES (?, ?, ?)')
-    .bind(email, me.id, now())
-    .run();
-  return c.json({ email });
+  const tenant = await c.env.DB.prepare('SELECT id FROM tenants WHERE id = ?').bind(tenantId).first();
+  if (!tenant) throw new HTTPException(404, { message: 'family not found' });
+  // Inviting an email that already has an account adds the membership
+  // directly — finalize only runs on first sign-in, so an allowlist row for
+  // an existing user would never be redeemed.
+  const existing = await c.env.DB
+    .prepare('SELECT id FROM users WHERE email = ?')
+    .bind(email)
+    .first<{ id: string }>();
+  if (existing) {
+    await c.env.DB.batch([
+      c.env.DB
+        .prepare('INSERT OR IGNORE INTO tenant_members (tenant_id, user_id, role, created_at) VALUES (?, ?, ?, ?)')
+        .bind(tenantId, existing.id, 'member', now()),
+      c.env.DB
+        .prepare('INSERT OR IGNORE INTO allowlist (tenant_id, email, added_by, added_at, used_by, used_at) VALUES (?, ?, ?, ?, ?, ?)')
+        .bind(tenantId, email, me.id, now(), existing.id, now()),
+    ]);
+  } else {
+    await c.env.DB
+      .prepare('INSERT OR IGNORE INTO allowlist (tenant_id, email, added_by, added_at) VALUES (?, ?, ?, ?)')
+      .bind(tenantId, email, me.id, now())
+      .run();
+  }
+  return c.json({ email, tenant_id: tenantId });
 });
 
 u.delete('/admin/allowlist/:email', requireAdmin, async (c) => {
   const email = decodeURIComponent(c.req.param('email')).toLowerCase();
-  await c.env.DB.prepare('DELETE FROM allowlist WHERE email = ?').bind(email).run();
+  const tenantId = c.req.query('tenant_id') ?? DEFAULT_TENANT_ID;
+  await c.env.DB.prepare('DELETE FROM allowlist WHERE tenant_id = ? AND email = ?').bind(tenantId, email).run();
   return c.json({ ok: true });
 });
 
 u.get('/admin/users', requireAdmin, async (c) => {
   const rows = await c.env.DB
-    .prepare('SELECT id, email, username, display_name, avatar_key, is_admin, created_at FROM users WHERE is_demo = 0 ORDER BY created_at DESC')
+    .prepare(`
+      SELECT u.id, u.email, u.username, u.display_name, u.avatar_key, u.is_admin, u.created_at,
+             (SELECT GROUP_CONCAT(t.name, ', ') FROM tenant_members tm JOIN tenants t ON t.id = tm.tenant_id WHERE tm.user_id = u.id) AS tenant_names
+      FROM users u
+      WHERE u.is_demo = 0
+      ORDER BY u.created_at DESC
+    `)
     .all();
   const items = await Promise.all((rows.results ?? []).map((row) => decorateUser(c, row)));
   return c.json({ items });
+});
+
+u.get('/admin/tenants', requireAdmin, async (c) => {
+  const rows = await c.env.DB
+    .prepare(`
+      SELECT t.id, t.name, t.created_at,
+             (SELECT COUNT(*) FROM tenant_members tm WHERE tm.tenant_id = t.id) AS member_count
+      FROM tenants t
+      ORDER BY t.created_at ASC
+    `)
+    .all();
+  return c.json({ items: rows.results ?? [] });
+});
+
+u.post('/admin/tenants', requireAdmin, async (c) => {
+  const me = c.get('user');
+  const body = await c.req.json<{ name?: string }>().catch(() => null);
+  const name = body?.name?.trim();
+  if (!name) throw new HTTPException(400, { message: 'name required' });
+  const id = newId();
+  const ts = now();
+  // The creating admin joins immediately so the new family is manageable
+  // (and visible in their switcher) right away.
+  await c.env.DB.batch([
+    c.env.DB.prepare('INSERT INTO tenants (id, name, created_at) VALUES (?, ?, ?)').bind(id, name.slice(0, 60), ts),
+    c.env.DB
+      .prepare('INSERT INTO tenant_members (tenant_id, user_id, role, created_at) VALUES (?, ?, ?, ?)')
+      .bind(id, me.id, 'admin', ts),
+  ]);
+  return c.json({ id, name: name.slice(0, 60), created_at: ts, member_count: 1 }, 201);
+});
+
+u.patch('/admin/tenants/:id', requireAdmin, async (c) => {
+  const id = c.req.param('id');
+  const body = await c.req.json<{ name?: string }>().catch(() => null);
+  const name = body?.name?.trim();
+  if (!name) throw new HTTPException(400, { message: 'name required' });
+  const res = await c.env.DB.prepare('UPDATE tenants SET name = ? WHERE id = ?').bind(name.slice(0, 60), id).run();
+  if (!res.meta.changes) throw new HTTPException(404, { message: 'family not found' });
+  return c.json({ ok: true });
+});
+
+u.get('/admin/tenants/:id/members', requireAdmin, async (c) => {
+  const id = c.req.param('id');
+  const rows = await c.env.DB
+    .prepare(`
+      SELECT u.id, u.username, u.display_name, u.avatar_key, tm.role, tm.created_at
+      FROM tenant_members tm
+      JOIN users u ON u.id = tm.user_id
+      WHERE tm.tenant_id = ?
+      ORDER BY tm.created_at ASC
+    `)
+    .bind(id)
+    .all();
+  const items = await Promise.all((rows.results ?? []).map((row) => decorateUser(c, row)));
+  return c.json({ items });
+});
+
+u.post('/admin/tenants/:id/members', requireAdmin, async (c) => {
+  const tenantId = c.req.param('id');
+  const body = await c.req.json<{ user_id?: string }>().catch(() => null);
+  if (!body?.user_id) throw new HTTPException(400, { message: 'user_id required' });
+  const tenant = await c.env.DB.prepare('SELECT id FROM tenants WHERE id = ?').bind(tenantId).first();
+  if (!tenant) throw new HTTPException(404, { message: 'family not found' });
+  const target = await c.env.DB.prepare('SELECT id FROM users WHERE id = ? AND is_demo = 0').bind(body.user_id).first();
+  if (!target) throw new HTTPException(404, { message: 'user not found' });
+  await c.env.DB
+    .prepare('INSERT OR IGNORE INTO tenant_members (tenant_id, user_id, role, created_at) VALUES (?, ?, ?, ?)')
+    .bind(tenantId, body.user_id, 'member', now())
+    .run();
+  return c.json({ ok: true });
+});
+
+u.delete('/admin/tenants/:id/members/:userId', requireAdmin, async (c) => {
+  const tenantId = c.req.param('id');
+  const userId = c.req.param('userId');
+  // Refuse to strand a user with zero memberships — remove the account
+  // instead (DELETE /me covers that) or move them first.
+  const count = await c.env.DB
+    .prepare('SELECT COUNT(*) AS n FROM tenant_members WHERE user_id = ?')
+    .bind(userId)
+    .first<{ n: number }>();
+  if ((count?.n ?? 0) <= 1) throw new HTTPException(400, { message: 'cannot remove a member from their only family' });
+  await c.env.DB.prepare('DELETE FROM tenant_members WHERE tenant_id = ? AND user_id = ?').bind(tenantId, userId).run();
+  return c.json({ ok: true });
 });
 
 u.patch('/admin/users/:id', requireAdmin, async (c) => {
@@ -452,7 +584,7 @@ u.post('/media', async (c) => {
 // never yields a half-formed post. Consumed pending_media rows are deleted in
 // the same batch.
 async function createPostFromPendingMedia(c: Context<App>, me: AppUser): Promise<Response> {
-  const body = await c.req.json<{ caption?: string; media_ids?: string[] }>().catch(() => null);
+  const body = await c.req.json<{ caption?: string; media_ids?: string[]; tenant_ids?: string[] }>().catch(() => null);
   const rawCaption = typeof body?.caption === 'string' ? body.caption.slice(0, 2000) : '';
   const caption = rawCaption.length ? rawCaption : null;
   const mediaIds = Array.isArray(body?.media_ids) ? body!.media_ids! : [];
@@ -461,6 +593,18 @@ async function createPostFromPendingMedia(c: Context<App>, me: AppUser): Promise
   if (mediaIds.length === 0) throw new HTTPException(400, { message: 'at least one media_id required' });
   if (mediaIds.length > cap) throw new HTTPException(400, { message: `at most ${cap} photos per post` });
   if (new Set(mediaIds).size !== mediaIds.length) throw new HTTPException(400, { message: 'duplicate media_id' });
+
+  // Audience: one post row per requested tenant, all sharing the same R2
+  // keys. Each family keeps its own like/comment thread on its own row.
+  const memberships = c.get('tenants');
+  const tenantIds = [...new Set(Array.isArray(body?.tenant_ids) && body!.tenant_ids!.length > 0
+    ? body!.tenant_ids!
+    : [c.get('activeTenantId')])];
+  for (const t of tenantIds) {
+    if (!memberships.some((m) => m.tenant_id === t)) {
+      throw new HTTPException(400, { message: 'not a member of this family' });
+    }
+  }
 
   const placeholders = mediaIds.map(() => '?').join(',');
   const pend = await c.env.DB
@@ -478,20 +622,30 @@ async function createPostFromPendingMedia(c: Context<App>, me: AppUser): Promise
     return { idx, imageKey: r.image_key, thumbKey: r.thumb_key, width: r.width, height: r.height };
   });
 
-  const postId = newId();
+  // One post row per audience tenant; sibling rows share the same R2 keys.
+  const postIdByTenant = new Map<string, string>(tenantIds.map((t) => [t, newId()]));
   const ts = now();
-  await c.env.DB.batch([
-    c.env.DB.prepare('INSERT INTO posts (id, user_id, caption, created_at) VALUES (?, ?, ?, ?)').bind(postId, me.id, caption, ts),
-    ...built.map((b) =>
+  const stmts = [];
+  for (const [tenantId, pid] of postIdByTenant) {
+    stmts.push(
       c.env.DB
-        .prepare('INSERT INTO post_media (post_id, idx, image_key, thumb_key, width, height) VALUES (?, ?, ?, ?, ?, ?)')
-        .bind(postId, b.idx, b.imageKey, b.thumbKey, b.width, b.height),
-    ),
-    c.env.DB.prepare(`DELETE FROM pending_media WHERE user_id = ? AND id IN (${placeholders})`).bind(me.id, ...mediaIds),
-  ]);
+        .prepare('INSERT INTO posts (id, user_id, tenant_id, caption, created_at) VALUES (?, ?, ?, ?, ?)')
+        .bind(pid, me.id, tenantId, caption, ts),
+      ...built.map((b) =>
+        c.env.DB
+          .prepare('INSERT INTO post_media (post_id, idx, image_key, thumb_key, width, height) VALUES (?, ?, ?, ?, ?, ?)')
+          .bind(pid, b.idx, b.imageKey, b.thumbKey, b.width, b.height),
+      ),
+    );
+  }
+  stmts.push(c.env.DB.prepare(`DELETE FROM pending_media WHERE user_id = ? AND id IN (${placeholders})`).bind(me.id, ...mediaIds));
+  await c.env.DB.batch(stmts);
 
-  c.executionCtx.waitUntil(fanOutNewPost(c.env, me, postId, caption));
+  c.executionCtx.waitUntil(fanOutNewPost(c.env, me, postIdByTenant, caption));
 
+  // Return the row the client's current feed will show: the active tenant's
+  // if it is in the audience, otherwise the first audience tenant's.
+  const primaryId = postIdByTenant.get(c.get('activeTenantId')) ?? postIdByTenant.get(tenantIds[0]!)!;
   const sign = await signerFor(c);
   const media = await Promise.all(built.map(async (b) => ({
     idx: b.idx,
@@ -500,7 +654,7 @@ async function createPostFromPendingMedia(c: Context<App>, me: AppUser): Promise
     width: b.width,
     height: b.height,
   })));
-  return c.json({ id: postId, created_at: ts, media });
+  return c.json({ id: primaryId, created_at: ts, media });
 }
 
 u.post('/posts', async (c) => {
@@ -582,11 +736,14 @@ u.post('/posts', async (c) => {
     c.env.MEDIA.put(b.thumbKey, b.thumb.stream(), { httpMetadata: { contentType: b.thumb.type } }),
   ]));
 
+  // Legacy multipart clients predate tenancy: single post in the active
+  // (i.e. fallback first) tenant.
+  const tenantId = c.get('activeTenantId');
   const ts = now();
   const stmts = [
     c.env.DB
-      .prepare('INSERT INTO posts (id, user_id, caption, created_at) VALUES (?, ?, ?, ?)')
-      .bind(postId, me.id, caption, ts),
+      .prepare('INSERT INTO posts (id, user_id, tenant_id, caption, created_at) VALUES (?, ?, ?, ?, ?)')
+      .bind(postId, me.id, tenantId, caption, ts),
     ...built.map((b) =>
       c.env.DB
         .prepare('INSERT INTO post_media (post_id, idx, image_key, thumb_key, width, height) VALUES (?, ?, ?, ?, ?, ?)')
@@ -595,7 +752,7 @@ u.post('/posts', async (c) => {
   ];
   await c.env.DB.batch(stmts);
 
-  c.executionCtx.waitUntil(fanOutNewPost(c.env, me, postId, caption));
+  c.executionCtx.waitUntil(fanOutNewPost(c.env, me, new Map([[tenantId, postId]]), caption));
 
   const sign = await signerFor(c);
   const media = await Promise.all(built.map(async (b) => ({
@@ -608,16 +765,18 @@ u.post('/posts', async (c) => {
   return c.json({ id: postId, created_at: ts, media });
 });
 
-// Notify everyone except the author. @-mentions in the caption upgrade the
-// mentioned user's push from the generic broadcast to a personalised
-// "mentioned you in their post" notification — each recipient still gets at
-// most one push. waitUntil keeps the upload response fast; FCM failures
-// don't fail the post. Invalid tokens are pruned so dead devices don't slow
-// future fan-outs.
+// Notify the members of every tenant the post went to, author excluded.
+// @-mentions in the caption upgrade the mentioned user's push from the
+// generic broadcast to a personalised "mentioned you in their post"
+// notification — each recipient still gets at most one push, even when they
+// belong to several audience tenants. Each recipient's payload carries the
+// post row of a tenant THEY are in. waitUntil keeps the upload response
+// fast; FCM failures don't fail the post. Invalid tokens are pruned so dead
+// devices don't slow future fan-outs.
 async function fanOutNewPost(
   env: Env,
   author: AppUser,
-  postId: string,
+  postIdByTenant: Map<string, string>, // tenant_id -> that tenant's sibling post row
   caption: string | null,
 ): Promise<void> {
   // Demo identities (App Review accounts) shouldn't broadcast to the family.
@@ -637,56 +796,72 @@ async function fanOutNewPost(
         usernames.add(m[1]!.toLowerCase());
       }
     }
+    const tenantIds = [...postIdByTenant.keys()];
+    const tenantPh = tenantIds.map(() => '?').join(',');
     let mentionedIds = new Set<string>();
     if (usernames.size > 0) {
       const unames = Array.from(usernames);
       const placeholders = unames.map(() => '?').join(',');
+      // Only members of the audience tenants can be mentioned — an @username
+      // from another family must not leak a push (or the post) to them.
       const rows = await env.DB
-        .prepare(`SELECT id FROM users WHERE username IN (${placeholders})`)
-        .bind(...unames)
+        .prepare(`SELECT DISTINCT u.id FROM users u JOIN tenant_members tm ON tm.user_id = u.id WHERE u.username IN (${placeholders}) AND tm.tenant_id IN (${tenantPh})`)
+        .bind(...unames, ...tenantIds)
         .all<{ id: string }>();
       mentionedIds = new Set((rows.results ?? []).map((r) => r.id));
       mentionedIds.delete(author.id);
     }
 
-    // One query for all recipient tokens; bucket each token by whether its
-    // user was @mentioned. Mentioned users get the personalised message
-    // INSTEAD OF the broadcast — never both.
+    // One query for all recipient tokens across the audience tenants. A
+    // dual-tenant member appears once per tenant; the seen-set keeps it to
+    // one push. Tokens bucket by (sibling post id, mentioned?) so every
+    // recipient deep-links to a post row they can actually open.
     const tokRows = await env.DB
-      .prepare('SELECT token, user_id FROM device_tokens WHERE user_id != ?')
-      .bind(author.id)
-      .all<{ token: string; user_id: string }>();
-    const broadcastTokens: string[] = [];
-    const mentionedTokens: string[] = [];
+      .prepare(`SELECT dt.token, dt.user_id, tm.tenant_id FROM device_tokens dt JOIN tenant_members tm ON tm.user_id = dt.user_id WHERE tm.tenant_id IN (${tenantPh}) AND dt.user_id != ?`)
+      .bind(...tenantIds, author.id)
+      .all<{ token: string; user_id: string; tenant_id: string }>();
+    const seenTokens = new Set<string>();
+    const buckets = new Map<string, { broadcast: string[]; mentioned: string[] }>(); // key: tenant_id
+    let total = 0;
     for (const r of tokRows.results ?? []) {
-      if (mentionedIds.has(r.user_id)) mentionedTokens.push(r.token);
-      else broadcastTokens.push(r.token);
+      if (seenTokens.has(r.token)) continue;
+      seenTokens.add(r.token);
+      let b = buckets.get(r.tenant_id);
+      if (!b) {
+        b = { broadcast: [], mentioned: [] };
+        buckets.set(r.tenant_id, b);
+      }
+      (mentionedIds.has(r.user_id) ? b.mentioned : b.broadcast).push(r.token);
+      total++;
     }
     if (isDebugEnabled(env)) {
-      console.log(`push: fan-out post=${postId} author=${author.id} broadcast=${broadcastTokens.length} mentioned=${mentionedTokens.length} mentions=${mentionedIds.size}`);
+      console.log(`push: fan-out posts=${[...postIdByTenant.values()].join(',')} author=${author.id} recipients=${total} mentions=${mentionedIds.size}`);
     }
-    if (broadcastTokens.length === 0 && mentionedTokens.length === 0) return;
+    if (total === 0) return;
 
     const snippet = caption && caption.trim().length > 0 ? caption.slice(0, 140) : null;
     const invalidAll: string[] = [];
 
-    if (broadcastTokens.length > 0) {
-      const { sent, invalidTokens } = await sendPush(env, broadcastTokens, {
-        title: author.display_name,
-        body: snippet ?? 'shared a new photo',
-        data: { post_id: postId, type: 'new_post' },
-      });
-      if (isDebugEnabled(env)) console.log(`push: post broadcast sent=${sent} invalid=${invalidTokens.length}`);
-      invalidAll.push(...invalidTokens);
-    }
-    if (mentionedTokens.length > 0) {
-      const { sent, invalidTokens } = await sendPush(env, mentionedTokens, {
-        title: author.display_name,
-        body: 'mentioned you in their post',
-        data: { post_id: postId, type: 'mention' },
-      });
-      if (isDebugEnabled(env)) console.log(`push: post mention sent=${sent} invalid=${invalidTokens.length}`);
-      invalidAll.push(...invalidTokens);
+    for (const [tenantId, b] of buckets) {
+      const postId = postIdByTenant.get(tenantId)!;
+      if (b.broadcast.length > 0) {
+        const { sent, invalidTokens } = await sendPush(env, b.broadcast, {
+          title: author.display_name,
+          body: snippet ?? 'shared a new photo',
+          data: { post_id: postId, tenant_id: tenantId, type: 'new_post' },
+        });
+        if (isDebugEnabled(env)) console.log(`push: post broadcast tenant=${tenantId} sent=${sent} invalid=${invalidTokens.length}`);
+        invalidAll.push(...invalidTokens);
+      }
+      if (b.mentioned.length > 0) {
+        const { sent, invalidTokens } = await sendPush(env, b.mentioned, {
+          title: author.display_name,
+          body: 'mentioned you in their post',
+          data: { post_id: postId, tenant_id: tenantId, type: 'mention' },
+        });
+        if (isDebugEnabled(env)) console.log(`push: post mention tenant=${tenantId} sent=${sent} invalid=${invalidTokens.length}`);
+        invalidAll.push(...invalidTokens);
+      }
     }
 
     if (invalidAll.length > 0) {
@@ -718,9 +893,9 @@ async function fanOutNewComment(
   }
   try {
     const post = await env.DB
-      .prepare('SELECT user_id FROM posts WHERE id = ?')
+      .prepare('SELECT user_id, tenant_id FROM posts WHERE id = ?')
       .bind(postId)
-      .first<{ user_id: string }>();
+      .first<{ user_id: string; tenant_id: string }>();
     if (!post) return;
 
     // Mentions use [a-z0-9_] (same as the mobile autocomplete in
@@ -737,9 +912,11 @@ async function fanOutNewComment(
     if (usernames.size > 0) {
       const unames = Array.from(usernames);
       const placeholders = unames.map(() => '?').join(',');
+      // Scoped to the post's tenant so a same-named user in another family
+      // never gets pushed a post they can't open.
       const rows = await env.DB
-        .prepare(`SELECT id FROM users WHERE username IN (${placeholders})`)
-        .bind(...unames)
+        .prepare(`SELECT u.id FROM users u JOIN tenant_members tm ON tm.user_id = u.id WHERE u.username IN (${placeholders}) AND tm.tenant_id = ?`)
+        .bind(...unames, post.tenant_id)
         .all<{ id: string }>();
       mentionedIds = new Set((rows.results ?? []).map((r) => r.id));
     }
@@ -800,7 +977,7 @@ async function fanOutNewComment(
       const { sent, invalidTokens } = await sendPush(env, tokens, {
         title: commenter.display_name,
         body,
-        data: { post_id: postId, comment_id: commentId, type },
+        data: { post_id: postId, comment_id: commentId, tenant_id: post.tenant_id, type },
       });
       if (isDebugEnabled(env)) console.log(`push: comment kind=${kind} sent=${sent} invalid=${invalidTokens.length}`);
       invalidAll.push(...invalidTokens);
@@ -823,9 +1000,12 @@ async function fanOutNewComment(
 // 403) so a demo user can't probe for the existence of real posts. Use this on
 // every per-post read/write that takes a :id from the client.
 async function assertPostVisible(c: Context<App>, me: AppUser, postId: string): Promise<void> {
+  // Visible if the post lives in ANY tenant the caller belongs to (not just
+  // the active one) — push deep-links may open a post from the other family
+  // before the client has switched.
   const row = await c.env.DB
-    .prepare('SELECT 1 AS ok FROM posts p JOIN users u ON u.id = p.user_id WHERE p.id = ? AND u.is_demo = ?')
-    .bind(postId, me.is_demo)
+    .prepare('SELECT 1 AS ok FROM posts p WHERE p.id = ? AND p.tenant_id IN (SELECT tenant_id FROM tenant_members WHERE user_id = ?)')
+    .bind(postId, me.id)
     .first();
   if (!row) throw new HTTPException(404, { message: 'post not found' });
 }
@@ -840,18 +1020,18 @@ u.get('/feed', async (c) => {
   const rows = await c.env.DB
     .prepare(`
       SELECT
-        p.id, p.user_id, p.caption, p.created_at,
+        p.id, p.user_id, p.tenant_id, p.caption, p.created_at,
         u.username, u.display_name, u.avatar_key,
         (SELECT COUNT(*) FROM likes l WHERE l.post_id = p.id) AS like_count,
         (SELECT COUNT(*) FROM comments cm WHERE cm.post_id = p.id) AS comment_count,
         EXISTS(SELECT 1 FROM likes l2 WHERE l2.post_id = p.id AND l2.user_id = ?) AS liked
       FROM posts p
       JOIN users u ON u.id = p.user_id
-      WHERE p.created_at < ? AND u.is_demo = ?
+      WHERE p.tenant_id = ? AND p.created_at < ?
       ORDER BY p.created_at DESC
       LIMIT ?
     `)
-    .bind(me.id, cursorTs, me.is_demo, limit)
+    .bind(me.id, c.get('activeTenantId'), cursorTs, limit)
     .all();
 
   const postRows = rows.results ?? [];
@@ -874,11 +1054,11 @@ u.get('/users/search', async (c) => {
       FROM users
       WHERE (LOWER(username) LIKE ? ESCAPE '\\'
          OR LOWER(display_name) LIKE ? ESCAPE '\\')
-        AND is_demo = ?
+        AND id IN (SELECT user_id FROM tenant_members WHERE tenant_id = ?)
       ORDER BY username ASC
       LIMIT 8
     `)
-    .bind(like, like, me.is_demo)
+    .bind(like, like, c.get('activeTenantId'))
     .all();
   const items = await Promise.all((rows.results ?? []).map((row) => decorateUser(c, row)));
   return c.json({ items });
@@ -887,8 +1067,8 @@ u.get('/users/search', async (c) => {
 u.get('/users/by-username/:username', async (c) => {
   const me = c.get('user');
   const row = await c.env.DB
-    .prepare('SELECT id, email, username, display_name, avatar_key, is_admin, created_at FROM users WHERE username = ? AND is_demo = ?')
-    .bind(c.req.param('username').toLowerCase(), me.is_demo)
+    .prepare('SELECT id, email, username, display_name, avatar_key, is_admin, created_at FROM users WHERE username = ? AND id IN (SELECT tm.user_id FROM tenant_members tm JOIN tenant_members mine ON mine.tenant_id = tm.tenant_id WHERE mine.user_id = ?)')
+    .bind(c.req.param('username').toLowerCase(), me.id)
     .first();
   if (!row) throw new HTTPException(404, { message: 'user not found' });
   return c.json(await decorateUser(c, row));
@@ -897,8 +1077,8 @@ u.get('/users/by-username/:username', async (c) => {
 u.get('/users/:id', async (c) => {
   const me = c.get('user');
   const row = await c.env.DB
-    .prepare('SELECT id, email, username, display_name, avatar_key, is_admin, created_at FROM users WHERE id = ? AND is_demo = ?')
-    .bind(c.req.param('id'), me.is_demo)
+    .prepare('SELECT id, email, username, display_name, avatar_key, is_admin, created_at FROM users WHERE id = ? AND id IN (SELECT tm.user_id FROM tenant_members tm JOIN tenant_members mine ON mine.tenant_id = tm.tenant_id WHERE mine.user_id = ?)')
+    .bind(c.req.param('id'), me.id)
     .first();
   if (!row) throw new HTTPException(404, { message: 'user not found' });
   return c.json(await decorateUser(c, row));
@@ -916,13 +1096,12 @@ u.get('/users/:id/posts', async (c) => {
              pm.image_key, pm.thumb_key, pm.width, pm.height,
              (SELECT COUNT(*) FROM post_media WHERE post_id = p.id) AS media_count
       FROM posts p
-      JOIN users u ON u.id = p.user_id
       LEFT JOIN post_media pm ON pm.post_id = p.id AND pm.idx = 0
-      WHERE p.user_id = ? AND p.created_at < ? AND u.is_demo = ?
+      WHERE p.user_id = ? AND p.tenant_id = ? AND p.created_at < ?
       ORDER BY p.created_at DESC
       LIMIT ?
     `)
-    .bind(userId, cursorTs, me.is_demo, limit)
+    .bind(userId, c.get('activeTenantId'), cursorTs, limit)
     .all();
   const rawItems = rows.results ?? [];
   const items = await Promise.all(rawItems.map((row) => decorateThumb(c, row)));
@@ -935,15 +1114,15 @@ u.get('/posts/:id', async (c) => {
   const id = c.req.param('id');
   const row = await c.env.DB
     .prepare(`
-      SELECT p.id, p.user_id, p.caption, p.created_at,
+      SELECT p.id, p.user_id, p.tenant_id, p.caption, p.created_at,
              u.username, u.display_name, u.avatar_key,
              (SELECT COUNT(*) FROM likes l WHERE l.post_id = p.id) AS like_count,
              (SELECT COUNT(*) FROM comments cm WHERE cm.post_id = p.id) AS comment_count,
              EXISTS(SELECT 1 FROM likes l2 WHERE l2.post_id = p.id AND l2.user_id = ?) AS liked
       FROM posts p JOIN users u ON u.id = p.user_id
-      WHERE p.id = ? AND u.is_demo = ?
+      WHERE p.id = ? AND p.tenant_id IN (SELECT tenant_id FROM tenant_members WHERE user_id = ?)
     `)
-    .bind(me.id, id, me.is_demo)
+    .bind(me.id, id, me.id)
     .first();
   if (!row) throw new HTTPException(404, { message: 'post not found' });
   const mediaByPost = await fetchMediaForPosts(c, [id]);
@@ -963,7 +1142,24 @@ u.delete('/posts/:id', async (c) => {
   const r2Keys: string[] = [];
   for (const m of media.results ?? []) r2Keys.push(m.image_key, m.thumb_key);
   await c.env.DB.prepare('DELETE FROM posts WHERE id = ?').bind(id).run();
-  c.executionCtx.waitUntil(Promise.all(r2Keys.map((k) => c.env.MEDIA.delete(k).catch(() => {}))).then(() => {}));
+  // A "post to both families" sibling row shares these R2 keys — only delete
+  // objects no remaining post_media row references. Runs after the DELETE
+  // above so this post's own (cascaded) rows don't count as references.
+  let orphanedKeys = r2Keys;
+  if (r2Keys.length > 0) {
+    const ph = r2Keys.map(() => '?').join(',');
+    const stillUsed = await c.env.DB
+      .prepare(`SELECT image_key, thumb_key FROM post_media WHERE image_key IN (${ph}) OR thumb_key IN (${ph})`)
+      .bind(...r2Keys, ...r2Keys)
+      .all<{ image_key: string; thumb_key: string }>();
+    const used = new Set<string>();
+    for (const m of stillUsed.results ?? []) {
+      used.add(m.image_key);
+      used.add(m.thumb_key);
+    }
+    orphanedKeys = r2Keys.filter((k) => !used.has(k));
+  }
+  c.executionCtx.waitUntil(Promise.all(orphanedKeys.map((k) => c.env.MEDIA.delete(k).catch(() => {}))).then(() => {}));
   return c.json({ ok: true });
 });
 
@@ -981,6 +1177,7 @@ u.post('/posts/:id/like', async (c) => {
 u.delete('/posts/:id/like', async (c) => {
   const me = c.get('user');
   const id = c.req.param('id');
+  await assertPostVisible(c, me, id);
   await c.env.DB.prepare('DELETE FROM likes WHERE post_id = ? AND user_id = ?').bind(id, me.id).run();
   return c.json({ ok: true });
 });
@@ -1121,6 +1318,7 @@ async function decoratePost(c: Context<App>, row: Record<string, unknown>, media
   return {
     id: row.id,
     user_id: row.user_id,
+    tenant_id: row.tenant_id ?? null,
     media: decoratedMedia,
     image_url: first?.image_url ?? null,
     thumb_url: first?.thumb_url ?? null,

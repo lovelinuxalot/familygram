@@ -1,6 +1,6 @@
 import type { Context, MiddlewareHandler } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import type { Env, OryIdentity, Variables, AppUser } from './types';
+import type { Env, OryIdentity, Variables, AppUser, TenantMembership } from './types';
 import { isBootstrapAdmin } from './types';
 
 // demo.<base64url(JSON {email, exp})>.<base64url(hmac)>
@@ -153,7 +153,33 @@ export const requireUser: MiddlewareHandler<{ Bindings: Env; Variables: Variable
     await c.env.DB.prepare('UPDATE users SET is_admin = 1 WHERE id = ?').bind(row.id).run();
     row.is_admin = 1;
   }
+
+  // Ordered oldest-first so the fallback below is stable: clients that never
+  // send X-Tenant-Id (all pre-tenancy builds) keep operating in their
+  // original tenant.
+  const memberships = (
+    await c.env.DB
+      .prepare(
+        'SELECT tm.tenant_id, t.name, tm.role FROM tenant_members tm JOIN tenants t ON t.id = tm.tenant_id WHERE tm.user_id = ? ORDER BY tm.created_at ASC, tm.tenant_id ASC',
+      )
+      .bind(row.id)
+      .all<TenantMembership>()
+  ).results;
+  if (memberships.length === 0) {
+    throw new HTTPException(403, { message: 'no family membership' });
+  }
+  const requested = c.req.header('X-Tenant-Id');
+  let activeTenantId = memberships[0]!.tenant_id;
+  if (requested) {
+    if (!memberships.some((m) => m.tenant_id === requested)) {
+      throw new HTTPException(403, { message: 'not a member of this family' });
+    }
+    activeTenantId = requested;
+  }
+
   c.set('user', row);
+  c.set('tenants', memberships);
+  c.set('activeTenantId', activeTenantId);
   await next();
 };
 

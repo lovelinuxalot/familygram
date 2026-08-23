@@ -76,6 +76,18 @@ export interface AppUser {
   created_at: number;
 }
 
+// Fixed tenant ids seeded by migration 0007. 'default' is the original
+// family; 'demo' is the App Review sandbox world.
+export const DEFAULT_TENANT_ID = 'default';
+export const DEMO_TENANT_ID = 'demo';
+
+// One row per tenant the requesting user belongs to (see requireUser).
+export interface TenantMembership {
+  tenant_id: string;
+  name: string;
+  role: string; // 'admin' | 'member' — stored for later per-tenant enforcement
+}
+
 export function isBootstrapAdmin(env: Env, email: string): boolean {
   const list = (env.ADMIN_EMAILS ?? '')
     .split(',')
@@ -91,6 +103,11 @@ export type Variables = {
   // Set to true by oryAuth when the bearer token is a locally-signed demo
   // token (DEMO_USERS path). /me/finalize uses this to skip the allowlist.
   isDemo: boolean;
+  // Populated by requireUser: all tenants the user belongs to (oldest first)
+  // and the tenant this request operates in (X-Tenant-Id header, validated
+  // against memberships; falls back to the first membership for old clients).
+  tenants: TenantMembership[];
+  activeTenantId: string;
 };
 
 export interface OryIdentity {

@@ -2,6 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../api/api_client.dart';
 import '../models/models.dart';
 import 'auth.dart';
+import 'tenant.dart';
 
 class FeedState {
   final List<Post> items;
@@ -63,5 +64,11 @@ class FeedController extends StateNotifier<FeedState> {
 }
 
 final feedProvider = StateNotifierProvider<FeedController, FeedState>((ref) {
-  return FeedController(ref.read(apiClientProvider));
+  // Watching the active tenant recreates the controller on a family switch,
+  // so the feed starts fresh in the new scope (the API client is already
+  // sending the new X-Tenant-Id by the time this rebuilds).
+  ref.watch(activeTenantProvider);
+  final controller = FeedController(ref.read(apiClientProvider));
+  controller.refresh();
+  return controller;
 });

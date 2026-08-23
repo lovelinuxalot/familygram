@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -8,6 +9,7 @@ import 'package:go_router/go_router.dart';
 
 import '../util/log.dart' as logutil;
 import 'auth.dart';
+import 'tenant.dart';
 
 const _kAndroidChannelId = 'familygram_posts';
 const _kAndroidChannelName = 'New posts';
@@ -88,8 +90,19 @@ class PushController {
           android: AndroidInitializationSettings('@mipmap/ic_launcher'),
         ),
         onDidReceiveNotificationResponse: (resp) {
-          final postId = resp.payload;
-          if (postId != null && postId.isNotEmpty) _navigateToPost(postId);
+          final payload = resp.payload;
+          if (payload == null || payload.isEmpty) return;
+          // JSON {post_id, tenant_id} since tenancy; a bare post id may
+          // linger in the shade from a pre-tenancy build.
+          try {
+            final m = jsonDecode(payload) as Map<String, dynamic>;
+            final postId = m['post_id'] as String?;
+            if (postId != null && postId.isNotEmpty) {
+              _navigateToPost(postId, m['tenant_id'] as String?);
+            }
+          } catch (_) {
+            _navigateToPost(payload, null);
+          }
         },
       );
       final androidImpl = _local
@@ -170,6 +183,7 @@ class PushController {
     final notification = message.notification;
     if (notification == null) return;
     final postId = message.data['post_id']?.toString();
+    final tenantId = message.data['tenant_id']?.toString();
     _local.show(
       DateTime.now().millisecondsSinceEpoch.remainder(1 << 31),
       notification.title,
@@ -183,20 +197,31 @@ class PushController {
           priority: Priority.high,
         ),
       ),
-      payload: postId,
+      payload: postId == null ? null : jsonEncode({'post_id': postId, 'tenant_id': tenantId}),
     );
   }
 
   void _handleTap(RemoteMessage message) {
     final postId = message.data['post_id']?.toString();
-    if (postId != null && postId.isNotEmpty) _navigateToPost(postId);
+    if (postId != null && postId.isNotEmpty) {
+      _navigateToPost(postId, message.data['tenant_id']?.toString());
+    }
   }
 
-  void _navigateToPost(String postId) {
+  void _navigateToPost(String postId, String? tenantId) {
     final router = _ref.read(routerProvider);
     if (router == null) {
       logutil.flog('push: router not ready, dropping deep-link to /post/$postId');
       return;
+    }
+    // A notification from the other family: align the app's context first so
+    // the feed behind the post detail matches. The post itself is visible
+    // either way (the server allows any of the user's tenants).
+    if (tenantId != null && tenantId.isNotEmpty) {
+      final memberships = _ref.read(authProvider).me?.tenants ?? const [];
+      if (memberships.any((t) => t.id == tenantId)) {
+        unawaited(_ref.read(activeTenantProvider.notifier).switchTo(tenantId));
+      }
     }
     router.push('/post/$postId');
   }

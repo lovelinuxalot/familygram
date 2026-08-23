@@ -7,6 +7,7 @@ import '../api/ory_client.dart';
 import '../models/models.dart';
 import 'biometric.dart';
 import 'push.dart';
+import 'tenant.dart';
 
 const _kSessionKey = 'ory_session_token';
 
@@ -86,12 +87,24 @@ class AuthController extends StateNotifier<AuthState> {
     await _ref.read(pushControllerProvider).unregisterCurrent();
     await _ref.read(secureStorageProvider).delete(key: _kSessionKey);
     _ref.read(apiClientProvider).setToken(null);
+    await _ref.read(activeTenantProvider.notifier).clear();
     _ref.read(biometricProvider.notifier).reset();
     state = const AuthState();
   }
 
   void setMe(Me me) {
     state = state.copyWith(me: me);
+  }
+
+  // Re-fetch /me so membership changes (family created, member added or
+  // removed) show up without an app restart — the feed switcher and upload
+  // chips key off me.tenants. Best-effort: keeps current state on failure.
+  Future<void> refreshMe() async {
+    try {
+      final me = await _ref.read(apiClientProvider).me();
+      await _ref.read(activeTenantProvider.notifier).initFromMe(me);
+      state = state.copyWith(me: me);
+    } catch (_) {}
   }
 
   Future<void> _persist(String token) async {
@@ -107,6 +120,9 @@ class AuthController extends StateNotifier<AuthState> {
     final api = _ref.read(apiClientProvider);
     try {
       final me = await api.me();
+      // Pick the active family BEFORE publishing `me` — publishing flips the
+      // router to the feed, and its first fetch must already be scoped.
+      await _ref.read(activeTenantProvider.notifier).initFromMe(me);
       state = state.copyWith(me: me, clearNotAllowed: true);
       _kickPushRegistration();
       return;
@@ -117,6 +133,7 @@ class AuthController extends StateNotifier<AuthState> {
     }
     try {
       final me = await api.finalize();
+      await _ref.read(activeTenantProvider.notifier).initFromMe(me);
       state = state.copyWith(me: me, clearNotAllowed: true);
       _kickPushRegistration();
     } on ApiException catch (e) {

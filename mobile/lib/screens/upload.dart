@@ -9,8 +9,10 @@ import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../api/api_client.dart';
+import '../models/models.dart';
 import '../state/auth.dart';
 import '../state/feed.dart';
+import '../state/tenant.dart';
 import '../util/error_message.dart';
 import '../util/log.dart';
 import '../widgets/mention_field.dart';
@@ -44,9 +46,22 @@ class _UploadScreenState extends ConsumerState<UploadScreen> {
   String? _error;
   final _caption = TextEditingController();
   final _picker = ImagePicker();
+  // Audience for multi-family users: which tenants the post goes to.
+  // Pre-selected to the active family in initState; single-family users
+  // never see the chips and this stays a one-element set.
+  final Set<String> _selectedTenants = {};
 
   int get _maxMedia => ApiClient.lastConfig?.maxPostMedia ?? _kFallbackMaxMedia;
   int get _remaining => (_maxMedia - _items.length).clamp(0, _maxMedia);
+
+  List<TenantMembership> get _tenants => ref.read(authProvider).me?.tenants ?? const [];
+
+  @override
+  void initState() {
+    super.initState();
+    final active = ref.read(activeTenantProvider);
+    if (active != null) _selectedTenants.add(active);
+  }
 
   Future<void> _pickFromCamera() async {
     if (_remaining <= 0) return;
@@ -158,11 +173,19 @@ class _UploadScreenState extends ConsumerState<UploadScreen> {
       final post = await api.createPost(
         mediaIds: [for (final it in _items) it.mediaId!],
         caption: _caption.text.trim(),
+        tenantIds: _selectedTenants.isEmpty ? null : _selectedTenants.toList(),
       );
-      ref.read(feedProvider.notifier).prepend(post);
+      // Only prepend when the post is in the feed the user is looking at.
+      final active = ref.read(activeTenantProvider);
+      if (_selectedTenants.isEmpty || active == null || _selectedTenants.contains(active)) {
+        ref.read(feedProvider.notifier).prepend(post);
+      }
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Shared with the family.'), duration: Duration(seconds: 2)),
+        SnackBar(
+          content: Text(_selectedTenants.length > 1 ? 'Shared with both families.' : 'Shared with the family.'),
+          duration: const Duration(seconds: 2),
+        ),
       );
       context.go('/');
     } catch (e) {
@@ -210,6 +233,31 @@ class _UploadScreenState extends ConsumerState<UploadScreen> {
                     maxLines: 3,
                   ),
                   const SizedBox(height: 12),
+                  if (_tenants.length > 1) ...[
+                    Text('Share with', style: TextStyle(color: Colors.grey.shade600, fontSize: 12)),
+                    const SizedBox(height: 4),
+                    Wrap(
+                      spacing: 8,
+                      children: [
+                        for (final t in _tenants)
+                          FilterChip(
+                            label: Text(t.name),
+                            selected: _selectedTenants.contains(t.id),
+                            onSelected: _uploading
+                                ? null
+                                : (on) => setState(() {
+                                      if (on) {
+                                        _selectedTenants.add(t.id);
+                                      } else if (_selectedTenants.length > 1) {
+                                        // Keep at least one audience selected.
+                                        _selectedTenants.remove(t.id);
+                                      }
+                                    }),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                  ],
                   if (_error != null)
                     Padding(padding: const EdgeInsets.only(bottom: 12), child: Text(_error!, style: const TextStyle(color: Colors.red))),
                   FilledButton.icon(

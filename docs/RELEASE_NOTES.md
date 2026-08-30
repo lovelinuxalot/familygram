@@ -6,6 +6,20 @@ Update with `make release-note` (opens this file in `$EDITOR`) or `make release-
 
 ---
 
+## v1.5.0 — 2026-08-30
+
+### Added
+- feat: in-app reporting for posts and comments
+
+### Fixed
+- fix: multi image upload issue fix and increase timeout
+
+### Changed
+- add family tenant
+- chore: separate sandbox for review
+
+---
+
 ## v1.4.2 — push notifications, Android, App Review prep
 
 Everything that landed between v1.1.0 and the currently-shipped v1.4.2,

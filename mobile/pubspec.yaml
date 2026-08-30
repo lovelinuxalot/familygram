@@ -1,7 +1,7 @@
 name: familygram
 description: A private, invite-only family photo feed.
 publish_to: 'none'
-version: 1.4.5+21
+version: 1.5.0+23
 
 environment:
   sdk: '>=3.4.0 <4.0.0'

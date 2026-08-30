@@ -169,7 +169,13 @@ ship:  ## Auto-generate release notes, build + upload to TestFlight and Play Con
 	  exit 2; \
 	fi
 	@echo "▸ Generating release-notes entry for v$(VERSION)…"
-	@./scripts/add-release-note.sh $(VERSION) || true
+	@./scripts/add-release-note.sh $(VERSION); rc=$$?; \
+	  if [ $$rc -eq 3 ]; then \
+	    echo "▸ No new commits since the last release — leaving notes unchanged."; \
+	  elif [ $$rc -ne 0 ]; then \
+	    echo "✘ Release-notes generation failed (exit $$rc). Aborting ship." >&2; \
+	    exit $$rc; \
+	  fi
 	@RELEASE_NOTES="$$(./scripts/release-notes-body.sh $(VERSION))"; \
 	  export RELEASE_NOTES; \
 	  $(MAKE) ship-ios VERSION=$(VERSION) && \
@@ -179,12 +185,13 @@ ship-ios:  ## Bump build number, build IPA, upload to TestFlight. Optional VERSI
 	VERSION=$(VERSION) RELEASE_NOTES="$$RELEASE_NOTES" ./scripts/ship-testflight.sh
 
 ship-android:  ## Build the Android AAB and upload to Play Console (Internal testing by default). Optional TRACK=alpha|beta|production.
-	$(SHIP_ENV) && cd $(MOBILE) && flutter build appbundle --release \
-	  --dart-define=API_BASE="$$API_BASE" --dart-define=ORY_BASE="$$ORY_BASE"
 	@if [ ! -d scripts/node_modules ]; then \
 	  echo "▸ Installing scripts/ deps (one-time)…"; \
 	  cd scripts && npm install --silent; \
 	fi
+	@node scripts/check-version-code.js
+	$(SHIP_ENV) && cd $(MOBILE) && flutter build appbundle --release \
+	  --dart-define=API_BASE="$$API_BASE" --dart-define=ORY_BASE="$$ORY_BASE"
 	@RELEASE_NOTES="$$RELEASE_NOTES" node scripts/ship-playstore.js $(TRACK)
 
 release-doc:  ## Open the TestFlight release doc.

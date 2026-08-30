@@ -248,6 +248,31 @@ In **App Store Connect → App Review Information**, paste the demo credentials 
 
 The mobile app must be on a build that includes the demo login screen (shipped in the same release where `DEMO_USERS` was added) — older builds won't render the form even if the backend reports `demo_mode: true`.
 
+### Google Play review
+
+Nothing in the demo path is iOS-specific — `DEMO_USERS`, `/auth/demo` and the login form are the same code on both platforms, so Play's reviewers use the identical mechanism. Give them their **own** pair rather than sharing Apple's, so either can be rotated or revoked without breaking the other review:
+
+```bash
+cd backend
+
+# Both reviewers, comma-separated. `secret put` REPLACES the whole value —
+# there is no append, and `wrangler secret list` returns names only, never
+# values. Keep the Apple pair somewhere you can read it (password manager),
+# or you'll have to reissue both and update App Store Connect too.
+echo 'review@apple.com:Apple-Review-2026!,play-review@familygram.app:Play-Review-2026!' \
+  | npx wrangler secret put DEMO_USERS
+```
+
+No `wrangler deploy` is needed for the credential to take effect: `parseDemoUsers` re-reads the live env on every request.
+
+A brand-new demo email needs no seeding. `/me/finalize` sees `is_demo`, skips the allowlist, and auto-joins the account to `DEMO_TENANT_ID`, so the reviewer lands straight in the demo family and sees the seeded posts. `display_name` is derived from the email's local part (`play-review@…` → "play-review").
+
+In **Play Console → App content → App access**, choose *All or some functionality is restricted*, add an instruction with the username and password, and note:
+
+> Sign-in is invite-only, so use the demo account: on the login screen scroll to the "or sign in with demo account" card, enter the email and password above, and tap Sign in. The account sees an isolated demo family with sample posts — no real family content.
+
+There is no Play Developer API for App access; it is Console-only.
+
 ### Disabling after approval
 
 ```bash

@@ -10,6 +10,7 @@ import '../util/time.dart';
 import 'mention_field.dart';
 import 'mention_text.dart';
 import 'user_avatar.dart';
+import 'report_sheet.dart';
 
 // Bottom sheet shown when the user taps the comment icon on a feed tile.
 // Holds the comment list + composer. Replaces the previous "open
@@ -163,7 +164,28 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
             child: Text(c.displayName, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
           ),
           subtitle: MentionText(c.body, baseStyle: const TextStyle(fontSize: 14)),
-          trailing: Text(formatPostTime(c.createdAt), style: const TextStyle(fontSize: 11)),
+          // Timestamp plus, on other people's comments, the in-app report path
+          // required by Play's Child Safety Standards policy.
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(formatPostTime(c.createdAt), style: const TextStyle(fontSize: 11)),
+              if (c.userId != ref.read(authProvider).me?.id)
+                PopupMenuButton<String>(
+                  icon: const Icon(Icons.more_vert, size: 16),
+                  tooltip: 'More',
+                  padding: EdgeInsets.zero,
+                  onSelected: (v) async {
+                    if (v == 'report') {
+                      await showReportSheet(context, ref, 'comment', c.id);
+                    }
+                  },
+                  itemBuilder: (_) => [
+                    const PopupMenuItem(value: 'report', child: Text('Report comment')),
+                  ],
+                ),
+            ],
+          ),
         );
       },
     );

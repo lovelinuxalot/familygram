@@ -12,6 +12,7 @@ import 'caption.dart';
 import 'comments_sheet.dart';
 import 'likes_sheet.dart';
 import 'post_carousel.dart';
+import 'report_sheet.dart';
 import 'user_avatar.dart';
 
 class PostTile extends ConsumerWidget {
@@ -39,17 +40,26 @@ class PostTile extends ConsumerWidget {
             ),
             const Spacer(),
             Text(formatPostTime(post.createdAt), style: TextStyle(color: Colors.grey.shade600, fontSize: 12)),
-            if (isMine)
-              PopupMenuButton<String>(
-                icon: const Icon(Icons.more_vert, size: 20),
-                tooltip: 'More',
-                onSelected: (value) async {
-                  if (value == 'delete') await _confirmDelete(context, ref);
-                },
-                itemBuilder: (_) => [
-                  const PopupMenuItem(value: 'delete', child: Text('Delete post')),
-                ],
-              ),
+            // Always shown now: your own posts get Delete, everyone else's get
+            // Report. Play's Child Safety Standards policy requires the report
+            // path to exist in-app.
+            PopupMenuButton<String>(
+              icon: const Icon(Icons.more_vert, size: 20),
+              tooltip: 'More',
+              onSelected: (value) async {
+                if (value == 'delete') {
+                  await _confirmDelete(context, ref);
+                } else if (value == 'report') {
+                  await showReportSheet(context, ref, 'post', post.id);
+                }
+              },
+              itemBuilder: (_) => [
+                if (isMine)
+                  const PopupMenuItem(value: 'delete', child: Text('Delete post'))
+                else
+                  const PopupMenuItem(value: 'report', child: Text('Report post')),
+              ],
+            ),
           ]),
         ),
         PostCarousel(post: post),

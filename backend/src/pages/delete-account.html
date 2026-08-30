@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Familygram — Delete Your Account</title>
+<style>
+  body { max-width: 720px; margin: 2rem auto; padding: 0 1rem; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; line-height: 1.55; color: #14202e; background: #f7f9fb; }
+  h1 { font-size: 1.6rem; margin-bottom: 0.25rem; }
+  h2 { font-size: 1.15rem; margin-top: 2rem; }
+  .muted { color: #5d6b7c; font-size: 0.9rem; }
+  a { color: #1e3a5f; }
+  ol li { margin-bottom: 0.4rem; }
+  table { border-collapse: collapse; width: 100%; margin-top: 0.5rem; }
+  th, td { text-align: left; padding: 0.5rem 0.6rem; border-bottom: 1px solid #dbe3ec; vertical-align: top; }
+  th { font-size: 0.9rem; color: #5d6b7c; }
+  .steps { background: #fff; border: 1px solid #dbe3ec; border-radius: 8px; padding: 1rem 1.25rem; }
+</style>
+</head>
+<body>
+<h1>Delete your Familygram account</h1>
+<p class="muted">Last updated 2026-08-30</p>
+
+<p>This page explains how to delete your <strong>Familygram</strong> account and what happens to your data. Familygram is a private, invite-only family photo app.</p>
+
+<h2>How to delete your account</h2>
+<div class="steps">
+<ol>
+  <li>Open the Familygram app and sign in.</li>
+  <li>Tap <strong>You</strong> in the bottom navigation bar.</li>
+  <li>Tap <strong>Delete my account</strong>.</li>
+  <li>Confirm when prompted.</li>
+</ol>
+</div>
+<p>Deletion happens immediately — there is no waiting period and no separate request to submit. You are signed out as soon as it completes.</p>
+
+<h2>If you can no longer sign in</h2>
+<p>If you've lost access to your account and cannot reach the button above, ask the admin of your family — whoever invited you — to delete the account on your behalf. Each family runs its own private Familygram instance, so that admin is the data controller for your account.</p>
+
+<h2>What is deleted</h2>
+<table>
+  <tr><th>Data</th><th>What happens</th></tr>
+  <tr><td>Your account record — email address, username, display name</td><td>Deleted immediately</td></tr>
+  <tr><td>Photos you uploaded, and their thumbnails</td><td>Deleted from storage immediately</td></tr>
+  <tr><td>Your profile picture</td><td>Deleted from storage immediately</td></tr>
+  <tr><td>Your posts and their captions</td><td>Deleted immediately</td></tr>
+  <tr><td>Comments and likes you wrote</td><td>Deleted immediately</td></tr>
+  <tr><td>Comments and likes other people left on your posts</td><td>Deleted immediately, together with your posts</td></tr>
+  <tr><td>Your family memberships</td><td>Deleted immediately</td></tr>
+  <tr><td>Push notification tokens for your devices</td><td>Deleted immediately</td></tr>
+  <tr><td>Your invitation record</td><td>Deleted immediately</td></tr>
+</table>
+
+<h2>What is kept</h2>
+<table>
+  <tr><th>Data</th><th>Retention</th></tr>
+  <tr><td>Your sign-in identity held by our authentication provider, <a href="https://www.ory.sh">Ory Network</a> — the email address linked to your Google or Apple sign-in</td><td>Not removed by the in-app deletion. To erase it, ask your family admin to delete your identity in Ory, or contact them to request it on your behalf.</td></tr>
+  <tr><td>Infrastructure logs held by our hosting providers (Cloudflare, Ory)</td><td>Retained by those providers under their own retention schedules, typically a short rolling window. These are operational logs, not app content.</td></tr>
+</table>
+
+<p>Nothing else is retained. Familygram collects no analytics, telemetry, advertising identifiers, or location data, so there is no additional profile to delete.</p>
+
+<h2>More information</h2>
+<p>See the <a href="/privacy">Familygram Privacy Policy</a> for the full description of what is collected and how it is stored, or the <a href="/support">support page</a> to get in touch.</p>
+
+</body>
+</html>

@@ -35,14 +35,20 @@ else
   RANGE_ARG=("${LAST_COMMIT}..HEAD")
 fi
 
-mapfile -t COMMITS < <(git log "${RANGE_ARG[@]}" --no-merges --format='%s%n%b%n--END--')
-# Normalize: collapse multi-line entries to "subject\nbody" until --END--.
-# Easier path: re-grab subjects + body separately.
-mapfile -t SUBJECTS < <(git log "${RANGE_ARG[@]}" --no-merges --format='%s')
+# macOS ships bash 3.2, which has no `mapfile`/`readarray`, so read the log
+# line by line instead. Keep this POSIX-ish: the repo's hooks run under
+# /bin/bash on every contributor's Mac.
+SUBJECTS=()
+while IFS= read -r line; do
+  SUBJECTS+=("$line")
+done < <(git log ${RANGE_ARG[@]+"${RANGE_ARG[@]}"} --no-merges --format='%s')
 
 if [[ ${#SUBJECTS[@]} -eq 0 ]]; then
+  # Exit 3 == "nothing to do", distinct from a real failure. `make ship`
+  # tolerates 3 and aborts on anything else; before this, every failure was
+  # swallowed by `|| true` and three releases shipped with no notes.
   echo "No new commits since the last release. Nothing to add." >&2
-  exit 1
+  exit 3
 fi
 
 # ─── Classify commits ──────────────────────────────────────────────────────
@@ -73,7 +79,7 @@ for subj in "${SUBJECTS[@]}"; do
 done
 
 # Also check commit bodies for explicit "BREAKING CHANGE:" markers.
-if git log "${RANGE_ARG[@]}" --no-merges --format='%b' | grep -q 'BREAKING CHANGE'; then
+if git log ${RANGE_ARG[@]+"${RANGE_ARG[@]}"} --no-merges --format='%b' | grep -q 'BREAKING CHANGE'; then
   bump="major"
 fi
 

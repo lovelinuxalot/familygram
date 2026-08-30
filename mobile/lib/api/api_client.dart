@@ -257,6 +257,15 @@ class ApiClient {
   }
   Future<void> deletePost(String id) async => _ensureOk(await _dio.delete('/posts/$id'));
 
+  // reason: child_safety | nudity | harassment | other
+  Future<void> report(String targetType, String targetId, String reason, {String? note}) async =>
+      _ensureOk(await _dio.post('/reports', data: {
+        'target_type': targetType,
+        'target_id': targetId,
+        'reason': reason,
+        if (note != null && note.trim().isNotEmpty) 'note': note.trim(),
+      }));
+
   Future<List<Comment>> getComments(String postId) async {
     final r = await _dio.get('/posts/$postId/comments');
     _ensureOk(r);

@@ -13,6 +13,8 @@ import { sendPush } from './push';
 import { newId, now, slugifyEmailToUsername } from './util';
 import privacyHtml from './pages/privacy.html';
 import supportHtml from './pages/support.html';
+import deleteAccountHtml from './pages/delete-account.html';
+import childSafetyHtml from './pages/child-safety.html';
 
 type App = { Bindings: Env; Variables: Variables };
 
@@ -83,6 +85,37 @@ app.post('/auth/demo', async (c) => {
 
 app.get('/privacy', (c) => {
   return new Response(privacyHtml, {
+    status: 200,
+    headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'public, max-age=300' },
+  });
+});
+
+// Google Play requires a publicly reachable account-deletion page, linked from
+// the store listing (Play Console → Data safety). Must be readable without
+// signing in, so it lives on `app` alongside /privacy rather than behind auth.
+app.get('/delete-account', (c) => {
+  return new Response(deleteAccountHtml, {
+    status: 200,
+    headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'public, max-age=300' },
+  });
+});
+
+// Published CSAE standards, required by Google Play's Child Safety Standards
+// policy for apps in the Social category. The URL is submitted to Play Console
+// and must stay publicly reachable and non-editable, so it is served here
+// rather than from a doc the public could edit.
+app.get('/child-safety', (c) => {
+  // Same SUPPORT_EMAIL injection as /support — the address is deployment
+  // config, not source, so it never gets committed. Unlike /support this page
+  // shows the address itself: Play requires a contact a reporter can act on
+  // without first installing the app. Two occurrences, hence replaceAll.
+  const rawEmail = (c.env.SUPPORT_EMAIL ?? '').trim();
+  const safeEmail = /^[^<>"&\s]+@[^<>"&\s]+$/.test(rawEmail) ? rawEmail : '';
+  const contactLink = safeEmail
+    ? `<a href="mailto:${safeEmail}">${safeEmail}</a>`
+    : 'the administrator who installed Familygram for your family';
+  const html = childSafetyHtml.replaceAll('{{CONTACT_LINK}}', contactLink);
+  return new Response(html, {
     status: 200,
     headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'public, max-age=300' },
   });
@@ -299,14 +332,15 @@ u.post('/me/device-tokens', async (c) => {
   const ts = now();
   await c.env.DB
     .prepare(`
-      INSERT INTO device_tokens (token, user_id, platform, created_at, last_seen_at)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO device_tokens (token, user_id, platform, created_at, last_seen_at, last_tenant_id)
+      VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(token) DO UPDATE SET
         user_id = excluded.user_id,
         platform = excluded.platform,
-        last_seen_at = excluded.last_seen_at
+        last_seen_at = excluded.last_seen_at,
+        last_tenant_id = excluded.last_tenant_id
     `)
-    .bind(token, me.id, platform, ts, ts)
+    .bind(token, me.id, platform, ts, ts, c.get('activeTenantId') ?? null)
     .run();
   return c.json({ ok: true });
 });
@@ -812,30 +846,66 @@ async function fanOutNewPost(
       mentionedIds.delete(author.id);
     }
 
-    // One query for all recipient tokens across the audience tenants. A
-    // dual-tenant member appears once per tenant; the seen-set keeps it to
-    // one push. Tokens bucket by (sibling post id, mentioned?) so every
-    // recipient deep-links to a post row they can actually open.
+    // One query for all recipient tokens across the audience tenants. This
+    // yields a row per (device, tenant) pair, so a dual-tenant member with a
+    // phone and a tablet produces four rows. Collapse to ONE tenant choice
+    // per recipient, then put every one of their devices in that tenant's
+    // bucket — deduping per user rather than per token is what keeps a
+    // person's two devices deep-linking to the same sibling post row.
     const tokRows = await env.DB
-      .prepare(`SELECT dt.token, dt.user_id, tm.tenant_id FROM device_tokens dt JOIN tenant_members tm ON tm.user_id = dt.user_id WHERE tm.tenant_id IN (${tenantPh}) AND dt.user_id != ?`)
+      .prepare(`SELECT dt.token, dt.user_id, dt.last_tenant_id, dt.last_seen_at, tm.tenant_id FROM device_tokens dt JOIN tenant_members tm ON tm.user_id = dt.user_id WHERE tm.tenant_id IN (${tenantPh}) AND dt.user_id != ?`)
       .bind(...tenantIds, author.id)
-      .all<{ token: string; user_id: string; tenant_id: string }>();
-    const seenTokens = new Set<string>();
+      .all<{
+        token: string;
+        user_id: string;
+        last_tenant_id: string | null;
+        last_seen_at: number;
+        tenant_id: string;
+      }>();
+
+    interface Recipient {
+      tokens: Set<string>;
+      tenants: Set<string>;      // audience tenants this user belongs to
+      preferred: string | null;  // last_tenant_id of their most-recently-seen device
+      preferredSeenAt: number;
+    }
+    const recipients = new Map<string, Recipient>();
+    for (const r of tokRows.results ?? []) {
+      let rec = recipients.get(r.user_id);
+      if (!rec) {
+        rec = { tokens: new Set(), tenants: new Set(), preferred: null, preferredSeenAt: -1 };
+        recipients.set(r.user_id, rec);
+      }
+      rec.tokens.add(r.token);
+      rec.tenants.add(r.tenant_id);
+      if (r.last_tenant_id && r.last_seen_at > rec.preferredSeenAt) {
+        rec.preferred = r.last_tenant_id;
+        rec.preferredSeenAt = r.last_seen_at;
+      }
+    }
+
     const buckets = new Map<string, { broadcast: string[]; mentioned: string[] }>(); // key: tenant_id
     let total = 0;
-    for (const r of tokRows.results ?? []) {
-      if (seenTokens.has(r.token)) continue;
-      seenTokens.add(r.token);
-      let b = buckets.get(r.tenant_id);
+    for (const [userId, rec] of recipients) {
+      // Prefer the family this recipient was last browsing — but only when
+      // the post actually went there AND they're still a member, so a stale
+      // last_tenant_id can never deep-link them into a family they left.
+      // Otherwise take the lowest audience tenant id: an arbitrary choice,
+      // but a stable one, unlike D1's row order.
+      const tenantId = rec.preferred && rec.tenants.has(rec.preferred)
+        ? rec.preferred
+        : [...rec.tenants].sort()[0]!;
+      let b = buckets.get(tenantId);
       if (!b) {
         b = { broadcast: [], mentioned: [] };
-        buckets.set(r.tenant_id, b);
+        buckets.set(tenantId, b);
       }
-      (mentionedIds.has(r.user_id) ? b.mentioned : b.broadcast).push(r.token);
-      total++;
+      const target = mentionedIds.has(userId) ? b.mentioned : b.broadcast;
+      for (const t of rec.tokens) target.push(t);
+      total += rec.tokens.size;
     }
     if (isDebugEnabled(env)) {
-      console.log(`push: fan-out posts=${[...postIdByTenant.values()].join(',')} author=${author.id} recipients=${total} mentions=${mentionedIds.size}`);
+      console.log(`push: fan-out posts=${[...postIdByTenant.values()].join(',')} author=${author.id} recipients=${recipients.size} devices=${total} mentions=${mentionedIds.size}`);
     }
     if (total === 0) return;
 
@@ -1257,6 +1327,85 @@ u.delete('/comments/:id', async (c) => {
   if (row.user_id !== me.id) throw new HTTPException(403, { message: 'not your comment' });
   await c.env.DB.prepare('DELETE FROM comments WHERE id = ?').bind(id).run();
   return c.json({ ok: true });
+});
+
+// In-app reporting, required by Play's Child Safety Standards policy. The
+// reporter must be able to see the thing they're reporting, so the target is
+// resolved through the same tenant-visibility rules as a normal read — that
+// also stops the endpoint being used to probe for post ids in other families.
+u.post('/reports', async (c) => {
+  const me = c.get('user');
+  const body = await c.req
+    .json<{ target_type?: string; target_id?: string; reason?: string; note?: string }>()
+    .catch(() => null);
+  const targetType = body?.target_type;
+  const targetId = body?.target_id?.trim();
+  const reason = body?.reason;
+  if (targetType !== 'post' && targetType !== 'comment') {
+    throw new HTTPException(400, { message: 'target_type must be post or comment' });
+  }
+  if (!targetId) throw new HTTPException(400, { message: 'target_id required' });
+  if (!reason || !['child_safety', 'nudity', 'harassment', 'other'].includes(reason)) {
+    throw new HTTPException(400, { message: 'invalid reason' });
+  }
+
+  // Resolve the owner, and 404 if the caller can't see the target at all.
+  let owner: string | null = null;
+  let tenantId: string;
+  if (targetType === 'post') {
+    await assertPostVisible(c, me, targetId);
+    const row = await c.env.DB
+      .prepare('SELECT user_id, tenant_id FROM posts WHERE id = ?')
+      .bind(targetId)
+      .first<{ user_id: string; tenant_id: string }>();
+    if (!row) throw new HTTPException(404, { message: 'post not found' });
+    owner = row.user_id;
+    tenantId = row.tenant_id;
+  } else {
+    const row = await c.env.DB
+      .prepare('SELECT c.user_id, c.post_id FROM comments c WHERE c.id = ?')
+      .bind(targetId)
+      .first<{ user_id: string; post_id: string }>();
+    if (!row) throw new HTTPException(404, { message: 'comment not found' });
+    await assertPostVisible(c, me, row.post_id);
+    const post = await c.env.DB
+      .prepare('SELECT tenant_id FROM posts WHERE id = ?')
+      .bind(row.post_id)
+      .first<{ tenant_id: string }>();
+    owner = row.user_id;
+    tenantId = post!.tenant_id;
+  }
+
+  const note = (body?.note ?? '').toString().slice(0, 1000) || null;
+  await c.env.DB
+    .prepare(
+      'INSERT INTO reports (id, reporter_id, tenant_id, target_type, target_id, target_owner, reason, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    )
+    .bind(newId(), me.id, tenantId, targetType, targetId, owner, reason, note, now())
+    .run();
+
+  // Always log, not just under the debug flag: a child-safety report needs to
+  // be visible in `wrangler tail` without anyone having flipped a toggle.
+  console.log(
+    `report: reason=${reason} type=${targetType} target=${targetId} tenant=${tenantId} reporter=${me.id}`,
+  );
+  return c.json({ ok: true });
+});
+
+u.get('/admin/reports', requireAdmin, async (c) => {
+  const rows = await c.env.DB
+    .prepare(`
+      SELECT r.id, r.target_type, r.target_id, r.reason, r.note, r.created_at,
+             ru.display_name AS reporter_name, ou.display_name AS owner_name,
+             t.name AS tenant_name
+      FROM reports r
+      JOIN users ru ON ru.id = r.reporter_id
+      LEFT JOIN users ou ON ou.id = r.target_owner
+      LEFT JOIN tenants t ON t.id = r.tenant_id
+      ORDER BY r.created_at DESC LIMIT 200
+    `)
+    .all();
+  return c.json({ reports: rows.results ?? [] });
 });
 
 authed.route('/', u);

@@ -129,7 +129,7 @@ Open **Authentication → Social Sign-In (OIDC)** → **Add social sign-in provi
    ```
 5. **Save**. Ory now displays the Google **Authorized Redirect URI** on the provider page. It includes a per-provider suffix — for example:
    ```
-   https://<your-slug>.projects.oryapis.com/self-service/methods/oidc/callback/google--I75TIYk
+   https://<your-slug>.projects.oryapis.com/self-service/methods/oidc/callback/google-XXXXXXXX
    ```
    The `--<code>` part is Ory's unique identifier for this provider config (a different code per provider you add). **Copy the whole URL exactly as Ory shows it** — including the suffix. The plain `/google` form without the suffix won't match what Ory sends to Google at runtime.
 6. Back in **Google Cloud → APIs & Services → Credentials → your OAuth client → Authorized redirect URIs** → click **Add URI** → paste the full URL from step 5 → **Save**.

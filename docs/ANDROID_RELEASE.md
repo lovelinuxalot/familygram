@@ -13,7 +13,7 @@ The auth flow you set up for iOS already works for Android — we use Ory's OIDC
 This is your private signing key. Lose it and you can't ship updates ever again (Play Store won't accept builds signed with a different key). Generate once, back it up.
 
 ```bash
-cd /Users/allan.john/personal/git/familygram/mobile/android
+cd mobile/android   # from the repo root
 keytool -genkey -v \
   -keystore upload-keystore.jks \
   -keyalg RSA -keysize 2048 -validity 10000 \
@@ -33,7 +33,7 @@ Result: `mobile/android/upload-keystore.jks` (already gitignored).
 Then create the secrets file Gradle reads at build time:
 
 ```bash
-cd /Users/allan.john/personal/git/familygram/mobile/android
+cd mobile/android   # from the repo root
 cat > key.properties <<EOF
 storePassword=<the keystore password you just set>
 keyPassword=<the key password>
@@ -51,7 +51,6 @@ EOF
 The Android App Bundle (`.aab`) is what Play Store wants — not a raw APK.
 
 ```bash
-cd /Users/allan.john/personal/git/familygram
 make build-android
 ```
 

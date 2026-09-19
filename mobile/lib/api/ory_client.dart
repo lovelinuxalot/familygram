@@ -49,7 +49,7 @@ class OryClient {
     }
 
     // Ory's provider id is not always literally "google" / "apple" — each
-    // gets a unique suffix per provider config (e.g. "google--I75TIYk"). Look
+    // gets a unique suffix per provider config (e.g. "google-XXXXXXXX"). Look
     // it up from the flow's UI nodes so the code keeps working regardless of
     // how Ory names it.
     final providerId = _discoverProvider(init.data, providerDisplayName);
@@ -151,7 +151,7 @@ class OryClient {
 
   // Look through a flow's UI nodes to find an OIDC provider by its display
   // name (e.g. "Google"). Returns the actual provider id Ory expects in the
-  // submit payload (e.g. "google--I75TIYk").
+  // submit payload (e.g. "google-XXXXXXXX").
   static String? _discoverProvider(Map data, String displayName) {
     final ui = data['ui'];
     if (ui is! Map) return null;

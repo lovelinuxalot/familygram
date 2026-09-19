@@ -1,4 +1,5 @@
 import zlib, struct, base64
+from pathlib import Path
 
 def png(width, height, pixel_fn):
     raw = bytearray()
@@ -62,7 +63,8 @@ export function seedImage(filename: string): Uint8Array | null {
 }
 """
 
-with open('/Users/allan.john/personal/git/familygram/backend/src/demo_seed.ts', 'w') as fh:
+out = Path(__file__).resolve().parent.parent / 'backend' / 'src' / 'demo_seed.ts'
+with open(out, 'w') as fh:
     fh.write(header + body + footer)
 
 for name, val in b64.items():

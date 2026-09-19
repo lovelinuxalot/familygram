@@ -48,11 +48,16 @@ build/
 scripts/ship.env
 keys/
 
-# Android release signing — never commit
-mobile/android/key.properties
-mobile/android/app/*.keystore
-mobile/android/app/*.jks
-mobile/android/upload-keystore.jks
+# Android release signing — never commit. Match by extension anywhere in the
+# tree, not by exact path: a `upload-keystore.jks.bak` once slipped past the
+# old exact-path rules and shipped the upload key in the public repo.
+**/key.properties
+*.jks
+*.jks.*
+*.keystore
+*.keystore.*
+*.p12
+*.pfx
 
 # Firebase / push: client-side config files. Safe per Google's docs, but
 # keep them per-deployment so a fork doesn't accidentally inherit them.
@@ -61,3 +66,5 @@ mobile/ios/Runner/GoogleService-Info.plist
 mobile/android/app/google-services.json
 
 .claude/
+# iOS signing identity (Apple Team ID) — template in Signing.example.xcconfig
+mobile/ios/Flutter/Signing.xcconfig

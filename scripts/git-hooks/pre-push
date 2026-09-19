@@ -16,7 +16,9 @@ set -u
 
 repo_root=$(git rev-parse --show-toplevel)
 
-forbidden_paths='(^|/)(wrangler\.local\.jsonc|ship\.env|dev\.env\.mk)$|^keys/|AuthKey_[^/]+\.p8$|\.dev\.vars$|\.env\.local$'
+# Keystores are matched with an optional trailing suffix so a `.bak`/`.old`
+# copy can't slip through the way upload-keystore.jks.bak once did.
+forbidden_paths='(^|/)(wrangler\.local\.jsonc|ship\.env|dev\.env\.mk|key\.properties)$|^keys/|AuthKey_[^/]+\.p8$|\.dev\.vars$|\.env\.local$|\.(jks|keystore|p12|pfx)(\.[^/]*)?$'
 
 secret_regex=(
   '-----BEGIN [A-Z ]*PRIVATE KEY-----'

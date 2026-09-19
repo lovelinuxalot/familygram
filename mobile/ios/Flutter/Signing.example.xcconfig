@@ -1,0 +1,4 @@
+// Copy to Signing.xcconfig (gitignored) and set your own Apple Developer
+// Team ID — Xcode > Settings > Accounts, or developer.apple.com/account
+// under Membership details. Without it, `flutter build ipa` cannot sign.
+DEVELOPMENT_TEAM = YOUR_TEAM_ID

@@ -21,7 +21,11 @@ repo_root=$(git rev-parse --show-toplevel)
 forbidden_paths='(^|/)(wrangler\.local\.jsonc|ship\.env|dev\.env\.mk|key\.properties)$|^keys/|AuthKey_[^/]+\.p8$|\.dev\.vars$|\.env\.local$|\.(jks|keystore|p12|pfx)(\.[^/]*)?$'
 
 secret_regex=(
-  '-----BEGIN [A-Z ]*PRIVATE KEY-----'
+  # Anchored to line start (allowing the diff's leading '+') so prose that
+  # merely names a PEM header doesn't trip it. Real key material always
+  # starts the line; the second form catches a key embedded in JSON/env.
+  '^\+?-----BEGIN [A-Z ]*PRIVATE KEY-----'
+  '-----BEGIN [A-Z ]*PRIVATE KEY-----\\n'
   'AKIA[0-9A-Z]{16}'
   'ghp_[A-Za-z0-9]{36}'
   'gho_[A-Za-z0-9]{36}'

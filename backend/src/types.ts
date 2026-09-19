@@ -86,6 +86,7 @@ export interface TenantMembership {
   tenant_id: string;
   name: string;
   role: string; // 'admin' | 'member' — stored for later per-tenant enforcement
+  can_download: number; // 0 or 1 — may this member save photos out of the app
 }
 
 export function isBootstrapAdmin(env: Env, email: string): boolean {

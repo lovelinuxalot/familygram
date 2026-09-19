@@ -102,11 +102,12 @@ class PostTile extends ConsumerWidget {
             const Spacer(),
             // Builder gives us the share IconButton's own render box for the
             // iPad share-popover anchor.
-            Builder(builder: (innerContext) => IconButton(
-              tooltip: 'Share',
-              icon: const Icon(Icons.ios_share),
-              onPressed: () => sharePost(innerContext, post),
-            )),
+            if (post.canDownload)
+              Builder(builder: (innerContext) => IconButton(
+                tooltip: 'Share',
+                icon: const Icon(Icons.ios_share),
+                onPressed: () => sharePost(innerContext, post),
+              )),
           ]),
         ),
         if (post.caption != null && post.caption!.trim().isNotEmpty)

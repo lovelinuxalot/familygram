@@ -179,6 +179,16 @@ class ApiClient {
     _ensureOk(r);
   }
 
+  // Per-family save permission (migration 0010). Admins are always allowed
+  // server-side, so toggling one off is a no-op for them.
+  Future<void> adminSetTenantMemberDownload(String tenantId, String userId, bool canDownload) async {
+    final r = await _dio.patch(
+      '/admin/tenants/$tenantId/members/$userId',
+      data: {'can_download': canDownload},
+    );
+    _ensureOk(r);
+  }
+
   Future<void> adminRemoveTenantMember(String tenantId, String userId) async {
     final r = await _dio.delete('/admin/tenants/$tenantId/members/$userId');
     _ensureOk(r);

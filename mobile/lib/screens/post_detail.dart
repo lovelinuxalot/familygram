@@ -186,11 +186,12 @@ class _PostDetailScreenState extends ConsumerState<PostDetailScreen> {
                   ),
                   Text('${post.likeCount}', style: const TextStyle(fontSize: 13)),
                   const Spacer(),
-                  IconButton(
-                    tooltip: 'Share',
-                    icon: const Icon(Icons.ios_share),
-                    onPressed: () => sharePost(context, post),
-                  ),
+                  if (post.canDownload)
+                    IconButton(
+                      tooltip: 'Share',
+                      icon: const Icon(Icons.ios_share),
+                      onPressed: () => sharePost(context, post),
+                    ),
                 ]),
               ),
               if (post.caption != null && post.caption!.trim().isNotEmpty)

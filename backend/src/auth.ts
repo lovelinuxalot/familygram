@@ -160,7 +160,7 @@ export const requireUser: MiddlewareHandler<{ Bindings: Env; Variables: Variable
   const memberships = (
     await c.env.DB
       .prepare(
-        'SELECT tm.tenant_id, t.name, tm.role FROM tenant_members tm JOIN tenants t ON t.id = tm.tenant_id WHERE tm.user_id = ? ORDER BY tm.created_at ASC, tm.tenant_id ASC',
+        'SELECT tm.tenant_id, t.name, tm.role, tm.can_download FROM tenant_members tm JOIN tenants t ON t.id = tm.tenant_id WHERE tm.user_id = ? ORDER BY tm.created_at ASC, tm.tenant_id ASC',
       )
       .bind(row.id)
       .all<TenantMembership>()

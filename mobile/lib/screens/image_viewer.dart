@@ -53,7 +53,7 @@ class _ImageViewerScreenState extends State<ImageViewerScreen> {
         elevation: 0,
         iconTheme: const IconThemeData(color: Colors.white),
         title: multi ? Text('${_current + 1} of ${widget.urls.length}') : null,
-        actions: post != null
+        actions: post != null && post.canDownload
             ? [
                 Builder(builder: (innerContext) => IconButton(
                   tooltip: 'Share',

@@ -44,6 +44,9 @@ class Post {
   final int likeCount;
   final int commentCount;
   final bool liked;
+  // Server-computed for this viewer in this post's family. False hides the
+  // save/share action — see tenant_members.can_download (migration 0010).
+  final bool canDownload;
 
   Post({
     required this.id,
@@ -56,6 +59,7 @@ class Post {
     required this.likeCount,
     required this.commentCount,
     required this.liked,
+    this.canDownload = false,
   });
 
   // Convenience: first photo's URLs / dimensions. Anything that needs the
@@ -74,6 +78,7 @@ class Post {
         likeCount: likeCount ?? this.likeCount,
         commentCount: commentCount ?? this.commentCount,
         liked: liked ?? this.liked,
+        canDownload: canDownload,
       );
 
   factory Post.fromJson(Map<String, dynamic> j) => Post(
@@ -89,6 +94,7 @@ class Post {
         likeCount: j['like_count'] as int? ?? 0,
         commentCount: j['comment_count'] as int? ?? 0,
         liked: j['liked'] as bool? ?? false,
+        canDownload: j['can_download'] as bool? ?? false,
       );
 }
 
@@ -128,13 +134,17 @@ class UserProfile {
   final String displayName;
   final String? avatarUrl;
   final int? createdAt;
-  UserProfile({required this.id, required this.username, required this.displayName, this.avatarUrl, this.createdAt});
+  // Only populated by the admin member list, where the row is a tenant
+  // membership rather than a bare user. Elsewhere it stays false.
+  final bool canDownload;
+  UserProfile({required this.id, required this.username, required this.displayName, this.avatarUrl, this.createdAt, this.canDownload = false});
   factory UserProfile.fromJson(Map<String, dynamic> j) => UserProfile(
         id: j['id'] as String,
         username: j['username'] as String,
         displayName: j['display_name'] as String,
         avatarUrl: j['avatar_url'] as String?,
         createdAt: j['created_at'] as int?,
+        canDownload: (j['can_download'] as int? ?? 0) == 1,
       );
 }
 

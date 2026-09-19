@@ -483,7 +483,7 @@ u.get('/admin/tenants/:id/members', requireAdmin, async (c) => {
   const id = c.req.param('id');
   const rows = await c.env.DB
     .prepare(`
-      SELECT u.id, u.username, u.display_name, u.avatar_key, tm.role, tm.created_at
+      SELECT u.id, u.username, u.display_name, u.avatar_key, tm.role, tm.can_download, tm.created_at
       FROM tenant_members tm
       JOIN users u ON u.id = tm.user_id
       WHERE tm.tenant_id = ?
@@ -508,6 +508,25 @@ u.post('/admin/tenants/:id/members', requireAdmin, async (c) => {
     .bind(tenantId, body.user_id, 'member', now())
     .run();
   return c.json({ ok: true });
+});
+
+u.patch('/admin/tenants/:id/members/:userId', requireAdmin, async (c) => {
+  const tenantId = c.req.param('id');
+  const userId = c.req.param('userId');
+  const body = await c.req.json<{ can_download?: boolean }>().catch(() => null);
+  if (!body || body.can_download === undefined) {
+    throw new HTTPException(400, { message: 'can_download required' });
+  }
+  const member = await c.env.DB
+    .prepare('SELECT 1 AS ok FROM tenant_members WHERE tenant_id = ? AND user_id = ?')
+    .bind(tenantId, userId)
+    .first();
+  if (!member) throw new HTTPException(404, { message: 'membership not found' });
+  await c.env.DB
+    .prepare('UPDATE tenant_members SET can_download = ? WHERE tenant_id = ? AND user_id = ?')
+    .bind(body.can_download ? 1 : 0, tenantId, userId)
+    .run();
+  return c.json({ ok: true, can_download: body.can_download ? 1 : 0 });
 });
 
 u.delete('/admin/tenants/:id/members/:userId', requireAdmin, async (c) => {
@@ -1419,6 +1438,15 @@ async function signerFor(c: Context<App>) {
     key ? signMediaUrl(c.env, key, base) : Promise.resolve<string | null>(null);
 }
 
+// Download permission is per-family (tenant_members.can_download); admins can
+// always save. Reads the memberships requireUser already loaded, no extra query.
+function canDownloadIn(c: Context<App>, tenantId: unknown): boolean {
+  if (c.get('user')?.is_admin) return true;
+  if (typeof tenantId !== 'string') return false;
+  const memberships = c.get('tenants') ?? [];
+  return memberships.some((t) => t.tenant_id === tenantId && Number(t.can_download) === 1);
+}
+
 type MediaRow = {
   post_id: string;
   idx: number;
@@ -1484,6 +1512,7 @@ async function decoratePost(c: Context<App>, row: Record<string, unknown>, media
     like_count: Number(row.like_count ?? 0),
     comment_count: Number(row.comment_count ?? 0),
     liked: Boolean(row.liked),
+    can_download: canDownloadIn(c, row.tenant_id),
   };
 }
 

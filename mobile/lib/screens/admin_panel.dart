@@ -507,6 +507,16 @@ class _FamilyMembersSheetState extends ConsumerState<_FamilyMembersSheet> {
     }
   }
 
+  Future<void> _setDownload(UserProfile m, bool value) async {
+    try {
+      await ref.read(apiClientProvider).adminSetTenantMemberDownload(widget.tenant.id, m.id, value);
+      await _load();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not update: ${friendlyError(e)}')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return SafeArea(
@@ -533,8 +543,14 @@ class _FamilyMembersSheetState extends ConsumerState<_FamilyMembersSheet> {
                         return ListTile(
                           leading: UserAvatar(displayName: m.displayName, avatarUrl: m.avatarUrl, cacheKey: m.id, radius: 20),
                           title: Text(m.displayName),
-                          subtitle: Text('@${m.username}'),
-                          trailing: IconButton(icon: const Icon(Icons.person_remove_outlined), onPressed: () => _removeMember(m)),
+                          subtitle: Text(m.canDownload ? '@${m.username} · can save photos' : '@${m.username}'),
+                          trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                            Switch(
+                              value: m.canDownload,
+                              onChanged: (v) => _setDownload(m, v),
+                            ),
+                            IconButton(icon: const Icon(Icons.person_remove_outlined), onPressed: () => _removeMember(m)),
+                          ]),
                         );
                       },
                     ),

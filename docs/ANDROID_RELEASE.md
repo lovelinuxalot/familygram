@@ -10,7 +10,7 @@ The auth flow you set up for iOS already works for Android — we use Ory's OIDC
 
 ## 1. Generate the upload keystore
 
-This is your private signing key. Lose it and you can't ship updates ever again (Play Store won't accept builds signed with a different key). Generate once, back it up.
+This is your private signing key. Back it up somewhere safe — a lost or leaked upload key is replaceable once Play App Signing is on (see section 9), but only through a reset request that takes days, so treat it as hard to replace.
 
 ```bash
 cd mobile/android   # from the repo root
@@ -209,6 +209,53 @@ make ship-android TRACK=production        # promote to public production
 ```
 
 `make build` (without uploading) is also available for both.
+
+---
+
+## 9. Rotating a compromised or lost upload key
+
+Needed if the keystore leaks (committed to a public repo, shared, lost). This
+is recoverable **only because Play App Signing holds the real app signing
+key** — the key you generated in step 1 is just the upload key, and Google
+can swap which upload key it accepts.
+
+**Check this first.** In Play Console, go to **Protected with Play → Play
+Store protection → Manage Play app signing**. Older consoles put it under
+**Release → Setup → App integrity → App signing**. If there's no upload key
+section there, Play App Signing was never enabled and the upload key *is* the
+signing key — there's no reset, and the only way out is a new package name.
+
+Generate a replacement and export its certificate:
+
+```bash
+cd mobile/android   # from the repo root
+keytool -genkey -v -keystore upload-keystore-new.jks \
+  -keyalg RSA -keysize 2048 -validity 10000 -alias upload
+
+keytool -export -rfc -keystore upload-keystore-new.jks \
+  -alias upload -file upload_certificate.pem
+```
+
+On the Play app signing page, choose **Request upload key reset** and attach
+`upload_certificate.pem` — the PEM certificate, not the keystore. State the
+reason plainly; a key exposed in a public repo is a case they handle
+routinely. Approval takes a few days and you get an email when the new key is
+live.
+
+After that mail arrives:
+
+1. Replace `upload-keystore.jks` with the new keystore.
+2. Update `storePassword` / `keyPassword` in `key.properties`.
+3. Build and upload once to confirm Play accepts the new key.
+4. Destroy every copy of the old keystore, including `.bak` copies and any in
+   a password manager or backup archive.
+
+Until step 3 succeeds, keep the old keystore — if the reset is rejected you
+still need it to ship.
+
+Things that do **not** change: Maps, OAuth and Firebase fingerprints
+authenticate against the app signing key, which Google holds and which the
+reset leaves alone. Nothing to re-register.
 
 ---
 
